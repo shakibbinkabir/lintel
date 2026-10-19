@@ -2248,7 +2248,7 @@ dependencies = [
 
 [[package]]
 name = "lintel"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "notch-core",
@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "lintel-hook"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "serde_json",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "lintel-speak"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2504,11 +2504,11 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "notch-brand"
-version = "1.0.0"
+version = "1.0.1"
 
 [[package]]
 name = "notch-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "keyring",
  "notch-brand",
@@ -2522,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-agent-usage"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2533,7 +2533,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-apps"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2545,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-audio-extras"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2560,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-audio-mixer"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2574,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-breaks"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-calendar"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "jiff",
  "notch-core",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-capture"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-chat-plus"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-brand",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-cleaner-uninstaller"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-clipboard"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2658,7 +2658,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-command-bar"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2673,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-companion"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-controls-toggles"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2697,7 +2697,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-dictation"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "reqwest 0.12.28",
@@ -2712,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-displays-keepawake"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-editor"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-huds-power"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-hw-helper"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2763,7 +2763,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-input-tools"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-island-extras"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2790,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-lyrics"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "notch-core",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-media"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-media-tools"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2827,7 +2827,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-misc-late"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "notch-core",
@@ -2843,7 +2843,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-notifications-accessories"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-radial-menu"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "notch-core",
@@ -2873,7 +2873,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-recorder"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "notch-core",
@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-shelf"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "notch-core",
@@ -2906,7 +2906,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-sysmon"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2921,7 +2921,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-timers-downloads"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-voice"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-brand",
  "notch-core",
@@ -2953,7 +2953,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-weather"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "notch-feat-island-extras",
@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "notch-feat-window-layout"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -4359,7 +4359,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "svc-apps"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "svc-audio"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "windows 0.61.3",
  "windows-core 0.61.2",
@@ -4376,7 +4376,7 @@ dependencies = [
 
 [[package]]
 name = "svc-capture"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "png 0.17.16",
  "qrcode",
@@ -4387,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "svc-fs"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "windows 0.61.3",
@@ -4396,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "svc-hw"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -4406,7 +4406,7 @@ dependencies = [
 
 [[package]]
 name = "svc-inject"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "windows 0.61.3",
@@ -4414,7 +4414,7 @@ dependencies = [
 
 [[package]]
 name = "svc-input"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "svc-inject",
@@ -4424,7 +4424,7 @@ dependencies = [
 
 [[package]]
 name = "svc-media"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "windows 0.61.3",
@@ -4432,7 +4432,7 @@ dependencies = [
 
 [[package]]
 name = "svc-shell"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "windows 0.61.3",
@@ -4442,7 +4442,7 @@ dependencies = [
 
 [[package]]
 name = "svc-sysevents"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "windows 0.61.3",
@@ -4450,7 +4450,7 @@ dependencies = [
 
 [[package]]
 name = "svc-sysmon"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "serde",
@@ -4459,7 +4459,7 @@ dependencies = [
 
 [[package]]
 name = "svc-windows"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "notch-core",
  "windows 0.61.3",

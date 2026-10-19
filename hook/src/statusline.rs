@@ -36,6 +36,8 @@ const DRAIN_GRACE: Duration = Duration::from_millis(200);
 
 /// Saved by the app next to this program when the relay took the status line.
 const PREVIOUS_FILE: &str = "statusline-previous.json";
+/// Set on the user's status line while it runs, and so on everything it starts.
+const NESTED: &str = "LINTEL_STATUSLINE";
 
 pub fn run() -> ! {
     // Stdin comes from the agent and is bounded, like an event's (main.rs). A
@@ -58,7 +60,10 @@ pub fn run() -> ! {
             rx
         });
 
-    if let Some(command) = previous_command() {
+    // Started under another relay's status line: that relay already runs the
+    // user's own, and running ours too could chain back to it forever (#3).
+    let nested = std::env::var_os(NESTED).is_some();
+    if let Some(command) = previous_command().filter(|_| !nested) {
         if let Some(out) = run_previous(&command, &raw, PREVIOUS_BUDGET) {
             let mut stdout = std::io::stdout();
             let _ = stdout.write_all(&out);
@@ -170,14 +175,17 @@ fn git_bash_candidates(
 
 /// Runs `command` through the status line shell with `input` on stdin and
 /// returns what it printed (at most [`MAX_OUTPUT`] bytes), or nothing if it could
-/// not start or ran past `budget` (then it is killed).
+/// not start or ran past `budget` (then it is killed with everything it started).
 pub fn run_previous(command: &str, input: &[u8], budget: Duration) -> Option<Vec<u8>> {
     let mut child = shell(command)?
+        .env(NESTED, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    // Bash takes milliseconds to start anything, so nothing escapes before this.
+    let tree = crate::win::Tree::of(&child);
 
     // Feed and drain on their own threads: a long input or output cannot wedge us.
     let mut stdin = child.stdin.take()?;
@@ -213,6 +221,9 @@ pub fn run_previous(command: &str, input: &[u8], budget: Duration) -> Option<Vec
             Ok(Some(_)) => break,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             _ => {
+                if let Some(tree) = &tree {
+                    tree.kill();
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -267,6 +278,22 @@ mod tests {
 
 
 
+
+    #[test]
+    fn the_users_status_line_knows_it_runs_under_the_relay_and_dies_whole_on_timeout() {
+        if shell("true").is_none() {
+            return; // no Git Bash here
+        }
+        let out = run_previous("printf %s \"$LINTEL_STATUSLINE\"", b"", Duration::from_secs(10)).unwrap();
+        assert_eq!(out, b"1");
+        // A grandchild that outlived the killed bash would write the mark.
+        let mark = std::env::temp_dir().join(format!("lintel-tree-{}", std::process::id()));
+        let _ = std::fs::remove_file(&mark);
+        let command = format!("(sleep 1; echo x > '{}') & sleep 5", mark.to_string_lossy().replace('\\', "/"));
+        assert!(run_previous(&command, b"", Duration::from_millis(300)).is_none());
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!mark.exists());
+    }
 
     fn env(pairs: &[(&str, OsString)]) -> impl Fn(&str) -> Option<OsString> {
         let map: HashMap<String, OsString> = pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();

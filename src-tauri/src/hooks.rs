@@ -141,6 +141,33 @@ fn status_line_is_ours(v: &Value) -> bool {
     v.get("command").and_then(Value::as_str).is_some_and(|c| c.contains(MARKER))
 }
 
+/// The relay's own path when `command` is a status line relay built from this
+/// code: ours, an older or renamed build, another copy (`"…/x-hook.exe"
+/// --statusline`, or the old `StatusLine`).
+fn relay_exe(command: &str) -> Option<&str> {
+    let (exe, arg) = command.trim().rsplit_once(char::is_whitespace)?;
+    if arg != "--statusline" && arg != "StatusLine" {
+        return None;
+    }
+    let exe = exe.trim().trim_matches(['"', '\'']);
+    let name = exe.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
+    (name.ends_with("-hook") || name.ends_with("-hook.exe")).then_some(exe)
+}
+
+/// The status line to keep as the user's own when the relay takes `line`'s
+/// place. Another relay is never kept: two relays that keep each other run each
+/// other forever (#3). What that relay itself kept is, unless it is a relay too.
+fn users_own(line: &Value) -> Option<Value> {
+    let command = line.get("command").and_then(Value::as_str).unwrap_or_default();
+    let Some(exe) = relay_exe(command) else {
+        return Some(line.clone());
+    };
+    let kept = std::fs::read(Path::new(exe).with_file_name("statusline-previous.json")).ok()?;
+    let kept = serde_json::from_slice::<Value>(&kept).ok().filter(Value::is_object)?;
+    let command = kept.get("command").and_then(Value::as_str)?;
+    relay_exe(command).is_none().then_some(kept)
+}
+
 /// Settings with Lintel's hooks added; everything else is left untouched. A
 /// `hooks` (or one of its events) that is not what Claude Code documents is
 /// refused rather than replaced. `launch`: see `event_command`.
@@ -349,7 +376,7 @@ pub fn status_line_write(install: bool, fingerprint: &str) -> Result<String, Str
     let before = config_file::read(&settings_path())
         .and_then(|bytes| config_file::parse_json(bytes.as_deref(), "settings.json"))?;
     let previous = read_status_line_previous();
-    let own = before.get("statusLine").filter(|v| !status_line_is_ours(v)).cloned();
+    let own = before.get("statusLine").filter(|v| !status_line_is_ours(v)).and_then(users_own);
     let saved = match (install, own.as_ref()) {
         (true, Some(own)) => {
             save_status_line_previous(own).map_err(|_| {
@@ -519,6 +546,29 @@ mod tests {
         assert_eq!(status_line_settings(&theirs, false, Some(&previous)).unwrap()["statusLine"], theirs["statusLine"]);
         // A statusLine we do not understand is refused, never replaced.
         assert!(status_line_settings(&json!({ "statusLine": "echo hi" }), true, None).is_err());
+    }
+
+    #[test]
+    fn another_relay_is_never_kept_as_the_users_status_line() {
+        assert_eq!(relay_exe("\"C:/x/notch/bin/notch-hook.exe\" --statusline"), Some("C:/x/notch/bin/notch-hook.exe"));
+        assert!(relay_exe("\"C:/x/lintel-hook.exe\" StatusLine").is_some());
+        assert!(relay_exe("'/home/me/.local/bin/other-hook' --statusline").is_some());
+        assert!(relay_exe("~/bin/my-line --statusline").is_none());
+        assert!(relay_exe("\"C:/x/notch-hook.exe\" SessionStart").is_none());
+
+        // What the other relay kept is the user's own, unless it is a relay too.
+        let dir = std::env::temp_dir().join(format!("lintel-relay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("notch-hook.exe").to_string_lossy().replace('\\', "/");
+        let theirs = json!({ "command": format!("\"{exe}\" --statusline") });
+        assert_eq!(users_own(&theirs), None);
+        let mine = json!({ "type": "command", "command": "~/bin/my-line" });
+        std::fs::write(dir.join("statusline-previous.json"), mine.to_string()).unwrap();
+        assert_eq!(users_own(&theirs), Some(mine.clone()));
+        std::fs::write(dir.join("statusline-previous.json"), json!({ "command": "\"C:/y/lintel-hook.exe\" --statusline" }).to_string()).unwrap();
+        assert_eq!(users_own(&theirs), None);
+        assert_eq!(users_own(&mine), Some(mine));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

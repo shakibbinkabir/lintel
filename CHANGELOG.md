@@ -4,6 +4,12 @@ All notable changes to Lintel are written in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-10-19
+
+### Fixed
+
+- The plan usage status line could run another relay that ran it back, without end, when an older build's relay was also installed. Each refresh started a new chain of processes, hundreds within minutes (#3). A relay started by another relay now runs nothing more, connecting the status line never keeps another relay as your own, and a status line that runs past its time is ended with every process it started.
+
 ## [1.0.0] - 2026-10-12
 
 The first public release, and the first under the name Lintel. Earlier builds were private and carried a code name.
@@ -65,4 +71,5 @@ The first public release, and the first under the name Lintel. Earlier builds we
 - An installer for one user, without administrator rights. It is not code-signed.
 - At the first start, settings, data and saved keys of the code-named build are copied over once. The old install is left as it is. Agents are connected again from Settings.
 
-[1.0.0]: ../../releases
+[1.0.1]: ../../releases/tag/v1.0.1
+[1.0.0]: ../../releases/tag/v1.0.0

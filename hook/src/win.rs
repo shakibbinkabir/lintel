@@ -67,6 +67,35 @@ pub fn connect_to(path: &str) -> Option<std::fs::File> {
     }
 }
 
+/// A job holding a child process and everything it starts, so a timeout can end
+/// the whole tree: killing the child alone leaves its own children running.
+pub struct Tree(HANDLE);
+
+impl Tree {
+    pub fn of(child: &std::process::Child) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        // SAFETY: plain Win32 calls on a handle we own and the child's live handle.
+        unsafe {
+            let tree = Tree(CreateJobObjectW(None, windows::core::PCWSTR::null()).ok()?);
+            AssignProcessToJobObject(tree.0, HANDLE(child.as_raw_handle())).ok()?;
+            Some(tree)
+        }
+    }
+
+    pub fn kill(&self) {
+        // SAFETY: our own job handle.
+        let _ = unsafe { windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        // Closing does not end the processes: only `kill` does.
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
 /// The SID of the account this process runs as, as `S-1-5-21-…`.
 pub fn current_user_sid() -> Option<String> {
     unsafe { token_sid(GetCurrentProcess()) }
