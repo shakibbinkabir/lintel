@@ -25,12 +25,13 @@
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 
 mod launch;
 mod normalize;
+mod remote;
 mod reply;
 
 /// Budget for getting a pipe connection. Beyond this the agent wins, always.
@@ -39,6 +40,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 /// How long a permission prompt may stay on screen before the terminal takes over.
 const DECISION_BUDGET: Duration = Duration::from_secs(110);
+/// How often a waiting relay checks that the process that ran it is still there.
+const PARENT_POLL: Duration = Duration::from_millis(100);
+/// Set by the app's own `claude -p` runs (src-tauri/src/chat/tasks.rs): a
+/// headless run somebody watches, which keeps its pill.
+const WATCHED: &str = "LINTEL_WATCHED";
 
 /// Fields that are pointless to forward and can be enormous (a whole file read,
 /// a full command output). The island never shows them.
@@ -54,9 +60,18 @@ mod statusline;
 
 /// The live diff needs the whole text of a file edit, once it has happened:
 /// PostToolUse of these tools keeps its edit strings far longer than the rest.
-const DIFF_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write"];
-/// The `tool_input` keys holding the text being replaced or written.
-const DIFF_FIELDS: &[&str] = &["old_string", "new_string", "content"];
+const DIFF_TOOLS: &[&str] = &[
+    "Edit", "MultiEdit", "Write",
+    // Codex's patch, Antigravity's file tools, Kiro's file tool.
+    "apply_patch", "write_to_file", "replace_file_content", "multi_replace_file_content", "fs_write", "write",
+];
+/// The `tool_input` keys holding the text being replaced or written (a patch is
+/// Codex's `command`).
+const DIFF_FIELDS: &[&str] = &[
+    "old_string", "new_string", "content", "command",
+    "CodeContent", "TargetContent", "ReplacementContent", "targetContent", "replacementContent",
+    "old_str", "new_str", "file_text",
+];
 /// Per edit string. The island stops diffing at 200 KB anyway (DiffEngine).
 const MAX_DIFF_FIELD_LEN: usize = 256 * 1024;
 /// For all edit strings of one event together, so the line stays well under the
@@ -132,6 +147,8 @@ struct Event {
     question: Option<Value>,
     /// Claude Code's own `permission_suggestions`, kept whole for the Always button.
     suggestions: Option<Value>,
+    /// For Claude Code's ExitPlanMode, its input as it was: an allow sends it back.
+    plan: Option<Value>,
 }
 
 fn main() {
@@ -141,10 +158,22 @@ fn main() {
     let args = args();
     let mut raw = Vec::new();
     let _ = std::io::stdin().take(MAX_STDIN).read_to_end(&mut raw);
+    // An SSH host's event, run by the app for its tunnel (remote.rs).
+    let remote = remote::host();
+    if let Some(host) = &remote {
+        let Some(tagged) = remote::tag(&raw, host) else { std::process::exit(0) };
+        raw = tagged;
+    }
     let env = |key: &str| std::env::var(key).ok();
+    // Nobody watches it: Claude Code's "no opinion" (silence), and nothing sent.
+    if headless(&args.agent, &env) {
+        std::process::exit(0);
+    }
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    // A host's session has no window here: the app runs us, not its terminal.
+    let ancestors = if remote.is_some() { Vec::new() } else { win::ancestors() };
 
-    let Some(event) = prepare(&raw, &args, &env, &cwd) else {
+    let Some(event) = prepare(&raw, &args, &env, &cwd, &ancestors) else {
         // Nothing we could forward. An agent that needs JSON still gets its
         // "no opinion" — Copilot is fail-closed and would deny without it.
         let name = normalize::event(&args.event);
@@ -157,8 +186,21 @@ fn main() {
     let waits_for_answer = event.name == "PermissionRequest" && reply::takes_decisions(&args.agent);
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
 
-    let outcome = exchange(&win::pipe_path(), event.line.clone(), waits_for_answer, budget);
-    print(reply::stdout_with(&args.agent, &event.name, outcome.answer(), event.question.as_ref(), event.suggestions.as_ref()));
+    // A prompt answered in the terminal: Claude Code ends the shell that ran us
+    // (Git Bash), and its going ends our wait, so the app sees us hang up and
+    // takes the card down. Only a request that waits watches anything.
+    let parent = ancestors.first().filter(|_| waits_for_answer).and_then(|pid| win::Parent::of(*pid));
+    let gone = || parent.as_ref().is_some_and(win::Parent::gone);
+    let outcome = exchange(&win::pipe_path(), event.line.clone(), waits_for_answer, budget, &gone);
+    let reply = match (&event.plan, outcome.answer()) {
+        (Some(plan), Some(decision)) if reply::is_claude_code(&args.agent) => reply::plan_json(decision, plan),
+        _ => reply::stdout_with(&args.agent, &event.name, outcome.answer(), event.question.as_ref(), event.suggestions.as_ref()),
+    };
+    print(reply);
+    if let Some((message, code)) = reply::exit_status(&args.agent, &event.name, outcome.answer()) {
+        eprintln!("{message}");
+        std::process::exit(code);
+    }
     // The app is closed and the user opted in: it is started for the turn that
     // begins, once the agent has its reply, and never waited for.
     if outcome == Outcome::NoServer && args.launch && launch::starts(&event.name) {
@@ -173,14 +215,23 @@ fn main() {
 /// takes the pipe handle with it. Running out of time is "no decision", exactly
 /// like an app that answered nothing. (No catch_unwind here — the release
 /// profile is panic = "abort", so it would be dead code. `talk_on` is written
-/// to have nothing to panic on instead.)
-fn exchange(pipe: &str, line: String, waits: bool, budget: Duration) -> Outcome {
+/// to have nothing to panic on instead.) `gone` is asked every PARENT_POLL:
+/// true ends the wait at once, as no decision (the process that ran us left).
+fn exchange(pipe: &str, line: String, waits: bool, budget: Duration, gone: &dyn Fn() -> bool) -> Outcome {
     let (tx, rx) = mpsc::channel::<Outcome>();
     let pipe = pipe.to_string();
     std::thread::spawn(move || {
         let _ = tx.send(talk_on(&pipe, &line, waits));
     });
-    rx.recv_timeout(budget).unwrap_or(Outcome::Sent(None))
+    let deadline = Instant::now() + budget;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left.min(PARENT_POLL)) {
+            Ok(outcome) => return outcome,
+            Err(mpsc::RecvTimeoutError::Timeout) if left > PARENT_POLL && !gone() => {}
+            Err(_) => return Outcome::Sent(None),
+        }
+    }
 }
 
 fn print(line: Option<String>) {
@@ -192,12 +243,26 @@ fn print(line: Option<String>) {
 }
 
 /// The payload to forward, from the raw stdin bytes. `env` reads an environment
-/// variable and `cwd` is the working directory, so tests stay pure.
-fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &str) -> Option<Event> {
+/// variable, `cwd` is the working directory and `ancestors` the processes we
+/// run under (win::ancestors), so tests stay pure.
+fn prepare(
+    raw: &[u8],
+    args: &Args,
+    env: &dyn Fn(&str) -> Option<String>,
+    cwd: &str,
+    ancestors: &[u32],
+) -> Option<Event> {
     // Some shells hand us a UTF-8 BOM; serde_json would choke on it.
     let raw = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(raw);
     let mut payload = serde_json::from_slice::<Value>(raw).ok()?;
     let map = payload.as_object_mut()?;
+
+    // Cursor also runs the Claude Code hooks of ~/.claude/settings.json, with its
+    // own payload. Its own hooks (--agent cursor) already report the same events
+    // on its pill; here they would show up as a Claude Code session.
+    if args.agent.is_empty() && map.contains_key("cursor_version") {
+        return None;
+    }
 
     // Which agent this hook was installed for, so the app routes it to the right
     // pill. Absent means Claude Code, so existing hook commands keep working
@@ -220,7 +285,7 @@ fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &
         .map(str::to_string)
         .unwrap_or_else(|| args.event.clone());
     normalize::fields(map, env);
-    let name = normalize::refine(normalize::event(&raw_event), map);
+    let name = normalize::for_agent(&args.agent, normalize::refine(normalize::event(&raw_event), map), map);
     map.insert("hook_event_name".into(), Value::String(name.clone()));
 
     for field in DROPPED_FIELDS {
@@ -233,13 +298,35 @@ fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &
 
     add_terminal_context(map, env);
 
+    // The pill's name: Claude Code's own record of the session holds the folder it
+    // started in and a /rename title. Read only on the events that can name a pill.
+    if !map.contains_key("lintel_agent") && ["SessionStart", "UserPromptSubmit", "Stop"].contains(&name.as_str()) {
+        let id = map.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
+        if let Some((root, title)) = session_record(env, &id) {
+            map.insert("session_root".into(), Value::String(root));
+            map.insert("session_title".into(), Value::String(title));
+        }
+    }
+
+    // Where the app finds the session's window ("Open terminal"): ours, never
+    // the agent's word for it.
+    if ancestors.is_empty() {
+        map.remove("lintel_ancestors");
+    } else {
+        map.insert("lintel_ancestors".into(), ancestors.iter().copied().map(Value::from).collect());
+    }
+
     // Kept whole: what goes back to Claude Code must be its own input, not the
     // shortened copy the island is shown.
-    let question = (map.get("tool_name").and_then(Value::as_str) == Some("AskUserQuestion"))
-        .then(|| map.get("tool_input").cloned())
-        .flatten();
+    let tool = map.get("tool_name").and_then(Value::as_str);
+    let kept = |name: &str| (tool == Some(name)).then(|| map.get("tool_input").cloned()).flatten();
+    let question = kept("AskUserQuestion");
+    let plan = kept("ExitPlanMode");
 
-    let suggestions = map.get("permission_suggestions").cloned();
+    // Antigravity's allow carries the grant for exactly this call (reply.rs).
+    let suggestions = map.get("permission_suggestions").cloned().or_else(|| {
+        (args.agent == "antigravity").then(|| serde_json::json!({ "name": tool, "args": map.get("tool_input") }))
+    });
 
     // Every string is capped, except the edit text of a finished Edit /
     // MultiEdit / Write, which the live diff needs whole (within its own limits).
@@ -251,7 +338,7 @@ fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &
         // line can still be too long. Send what the island needs rather than a
         // line the app would cut in the middle and drop as invalid JSON.
         let mut minimal = Map::new();
-        for key in ["hook_event_name", "session_id", "tool_name", "lintel_agent", "cwd"] {
+        for key in ["hook_event_name", "session_id", "tool_name", "lintel_agent", "cwd", "lintel_ancestors"] {
             if let Some(v) = payload.get(key) {
                 minimal.insert(key.into(), v.clone());
             }
@@ -260,7 +347,44 @@ fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &
         line = Value::Object(minimal).to_string();
     }
     line.push('\n');
-    Some(Event { line, name, question, suggestions })
+    Some(Event { line, name, question, suggestions, plan })
+}
+
+/// The folder a Claude Code session started in and its /rename title ("" when it was never
+/// renamed: a name Claude Code made up itself is `derived`), from `<config dir>/sessions/<pid>.json`.
+/// Bounded: small files only, and a few hundred of them at most.
+fn session_record(env: &dyn Fn(&str) -> Option<String>, id: &str) -> Option<(String, String)> {
+    if id.is_empty() {
+        return None;
+    }
+    let base = env("CLAUDE_CONFIG_DIR")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| env("USERPROFILE").map(|h| std::path::PathBuf::from(h).join(".claude")))?;
+    for entry in std::fs::read_dir(base.join("sessions")).ok()?.take(300).flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") || entry.metadata().ok()?.len() > 8192 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+        if v["sessionId"].as_str() != Some(id) {
+            continue;
+        }
+        let root = v["cwd"].as_str().unwrap_or_default().to_string();
+        let title = if v["nameSource"].as_str() == Some("derived") { "" } else { v["name"].as_str().unwrap_or_default() };
+        return Some((root, title.to_string()));
+    }
+    None
+}
+
+/// `claude -p`, the Agent SDK and scheduled jobs: Claude Code says so with an
+/// `sdk-…` entrypoint, and nobody watches them, so they make no pill and no
+/// card. The app's own task chip marks its runs (WATCHED) and keeps its pill.
+fn headless(agent: &str, env: &dyn Fn(&str) -> Option<String>) -> bool {
+    reply::is_claude_code(agent)
+        && env("CLAUDE_CODE_ENTRYPOINT").is_some_and(|e| e.starts_with("sdk-"))
+        && env(WATCHED).as_deref() != Some("1")
 }
 
 /// Which terminal the session runs in. Unlike macOS, Lintel here accepts events
@@ -297,6 +421,10 @@ fn agent_tag(arg: &str, env: &dyn Fn(&str) -> Option<String>) -> Option<String> 
 fn term_editor(env: &dyn Fn(&str) -> Option<String>) -> Option<&'static str> {
     if env("CURSOR_TRACE_ID").is_some_and(|v| !v.is_empty()) {
         return Some("cursor");
+    }
+    // A JetBrains IDE's terminal (JediTerm) says so in TERMINAL_EMULATOR.
+    if env("TERMINAL_EMULATOR").is_some_and(|v| v.starts_with("JetBrains")) {
+        return Some("jetbrains");
     }
     let helper = env("VSCODE_GIT_ASKPASS_NODE").unwrap_or_default();
     let exe = helper.rsplit(['/', '\\']).next().unwrap_or_default().to_ascii_lowercase();
@@ -451,7 +579,7 @@ mod tests {
 
     fn run(raw: &str, agent: &str, event: &str) -> (Value, Event) {
         let args = Args { agent: agent.into(), event: event.into(), launch: false };
-        let ev = prepare(raw.as_bytes(), &args, &|_| None, "/home/me/here").expect("forwarded");
+        let ev = prepare(raw.as_bytes(), &args, &|_| None, "/home/me/here", &[]).expect("forwarded");
         let v = serde_json::from_str(ev.line.trim_end()).unwrap();
         (v, ev)
     }
@@ -467,6 +595,84 @@ mod tests {
         assert_eq!(agent_tag("gemini", &desktop).as_deref(), Some("gemini"));
         assert_eq!(agent_tag("", &env_of(&[("CLAUDE_CODE_ENTRYPOINT", "cli")])), None);
         assert_eq!(agent_tag("", &env_of(&[])), None);
+    }
+
+    #[test]
+    fn headless_runs_stay_off_the_island_unless_the_app_watches_them() {
+        let headless_with = |agent: &str, vars: &'static [(&'static str, &'static str)]| headless(agent, &env_of(vars));
+        assert!(headless_with("", &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]));
+        assert!(headless_with("", &[("CLAUDE_CODE_ENTRYPOINT", "sdk-py")]));
+        assert!(!headless_with("", &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli"), ("LINTEL_WATCHED", "1")]));
+        assert!(!headless_with("", &[("CLAUDE_CODE_ENTRYPOINT", "cli")]));
+        assert!(!headless_with("", &[("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")]));
+        assert!(!headless_with("", &[]));
+        // Only Claude Code says how it was started: another agent is never skipped.
+        assert!(!headless_with("codex", &[("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")]));
+    }
+
+    #[test]
+    fn the_processes_we_run_under_go_with_the_event_and_only_ours() {
+        let args = Args::default();
+        let raw = br#"{"hook_event_name":"Stop","session_id":"s","lintel_ancestors":[1,2]}"#;
+        let ev = prepare(raw, &args, &|_| None, "/p", &[40, 30, 20]).unwrap();
+        let v: Value = serde_json::from_str(ev.line.trim_end()).unwrap();
+        assert_eq!(v["lintel_ancestors"], serde_json::json!([40, 30, 20]));
+        let ev = prepare(raw, &args, &|_| None, "/p", &[]).unwrap();
+        let v: Value = serde_json::from_str(ev.line.trim_end()).unwrap();
+        assert!(v.get("lintel_ancestors").is_none());
+        // The real walk: something runs us, and never ourselves.
+        let up = win::ancestors();
+        assert!(!up.is_empty() && !up.contains(&std::process::id()));
+    }
+
+    #[test]
+    fn a_plan_is_kept_whole_for_the_allow() {
+        let long = "p".repeat(3000);
+        let raw = format!(r#"{{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{{"plan":"{long}"}}}}"#);
+        let (v, ev) = run(&raw, "", "");
+        assert_eq!(ev.plan.unwrap()["plan"].as_str().unwrap().len(), 3000);
+        assert!(v["tool_input"]["plan"].as_str().unwrap().ends_with('…'));
+        assert!(ev.question.is_none());
+    }
+
+    #[test]
+    fn a_relay_whose_parent_left_stops_waiting_at_once() {
+        let name = own_pipe("orphan");
+        let (got, done) = stand_in(&name, Then::Silence);
+        let checks = std::cell::Cell::new(0);
+        let gone = || {
+            checks.set(checks.get() + 1);
+            checks.get() >= 2
+        };
+        let started = std::time::Instant::now();
+        let outcome = exchange(&name, format!("{REQUEST}\n"), true, Duration::from_secs(20), &gone);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert_eq!(got.recv_timeout(Duration::from_secs(5)).as_deref(), Ok(REQUEST));
+        assert_no_decision(&outcome);
+        let _ = done.send(());
+    }
+
+    #[test]
+    fn cursor_running_claude_code_hooks_is_dropped() {
+        let raw = r#"{"hook_event_name":"preToolUse","tool_name":"Shell","cursor_version":"2026.10.14","conversation_id":"c"}"#;
+        let args = Args { agent: String::new(), event: "PreToolUse".into(), launch: false };
+        assert!(prepare(raw.as_bytes(), &args, &|_| None, "/p", &[]).is_none());
+        let (v, _) = run(raw, "cursor", "");
+        assert_eq!(v["lintel_agent"], "cursor");
+    }
+
+    #[test]
+    fn a_jetbrains_terminal_is_told_apart() {
+        assert_eq!(term_editor(&env_of(&[("TERMINAL_EMULATOR", "JetBrains-JediTerm")])), Some("jetbrains"));
+        assert_eq!(term_editor(&env_of(&[("TERMINAL_EMULATOR", "other")])), None);
+    }
+
+    #[test]
+    fn antigravity_keeps_the_call_for_its_exact_grant() {
+        let raw = r#"{"toolCall":{"name":"run_command","args":{"CommandLine":"git status"}},"conversationId":"c"}"#;
+        let (v, ev) = run(raw, "antigravity", "PreToolUse");
+        assert_eq!(v["hook_event_name"], "PermissionRequest");
+        assert_eq!(ev.suggestions.unwrap()["args"]["command"], "git status");
     }
 
     #[test]
@@ -519,7 +725,7 @@ mod tests {
         payload.insert("k".repeat(MAX_LINE), serde_json::json!("v"));
         let raw = serde_json::to_vec(&payload).unwrap();
         let args = Args { agent: "codex".into(), event: String::new(), launch: false };
-        let ev = prepare(&raw, &args, &|_| None, "/tmp").expect("forwarded");
+        let ev = prepare(&raw, &args, &|_| None, "/tmp", &[]).expect("forwarded");
         assert!(ev.line.len() < 2_000);
         let v: Value = serde_json::from_str(ev.line.trim_end()).unwrap();
         assert_eq!(v["hook_event_name"], "PermissionRequest");
@@ -563,12 +769,12 @@ mod tests {
     fn what_cannot_be_read_is_not_forwarded() {
         let args = Args { agent: "copilot".into(), event: "preToolUse".into(), launch: false };
         for raw in ["", "not json", "[1,2]"] {
-            assert!(prepare(raw.as_bytes(), &args, &|_| None, "/").is_none());
+            assert!(prepare(raw.as_bytes(), &args, &|_| None, "/", &[]).is_none());
         }
         // A BOM is not a reason to drop the event.
         let mut bom = vec![0xEF, 0xBB, 0xBF];
         bom.extend_from_slice(br#"{"hook_event_name":"Stop"}"#);
-        assert!(prepare(&bom, &args, &|_| None, "/").is_some());
+        assert!(prepare(&bom, &args, &|_| None, "/", &[]).is_some());
     }
 
     #[test]
@@ -748,7 +954,7 @@ mod tests {
     fn with_the_app_closed_the_relay_is_done_at_once() {
         let started = std::time::Instant::now();
         // The long budget of a permission request: none of it may be waited out.
-        let outcome = exchange(&own_pipe("closed"), format!("{REQUEST}\n"), true, DECISION_BUDGET);
+        let outcome = exchange(&own_pipe("closed"), format!("{REQUEST}\n"), true, DECISION_BUDGET, &|| false);
         assert_eq!(outcome, Outcome::NoServer);
         assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
         assert_no_decision(&outcome);
@@ -760,7 +966,7 @@ mod tests {
         let (got, done) = stand_in(&name, Then::Silence);
         let budget = Duration::from_millis(600);
         let started = std::time::Instant::now();
-        let outcome = exchange(&name, format!("{REQUEST}\n"), true, budget);
+        let outcome = exchange(&name, format!("{REQUEST}\n"), true, budget, &|| false);
         let waited = started.elapsed();
         // The request arrived, the wait lasted its budget and no longer, and
         // what comes out of it is no decision: nothing answers for the user.
@@ -776,7 +982,7 @@ mod tests {
         let name = own_pipe("gone");
         let (got, _done) = stand_in(&name, Then::Close);
         let started = std::time::Instant::now();
-        let outcome = exchange(&name, format!("{REQUEST}\n"), true, Duration::from_secs(30));
+        let outcome = exchange(&name, format!("{REQUEST}\n"), true, Duration::from_secs(30), &|| false);
         assert_eq!(got.recv_timeout(Duration::from_secs(5)).as_deref(), Ok(REQUEST));
         assert!(started.elapsed() < Duration::from_secs(5), "{:?}", started.elapsed());
         assert_no_decision(&outcome);
@@ -786,13 +992,13 @@ mod tests {
     fn a_click_is_the_only_thing_that_comes_back_as_a_decision() {
         let name = own_pipe("deny");
         let (_got, done) = stand_in(&name, Then::Say("deny"));
-        let outcome = exchange(&name, format!("{REQUEST}\n"), true, Duration::from_secs(30));
+        let outcome = exchange(&name, format!("{REQUEST}\n"), true, Duration::from_secs(30), &|| false);
         assert_eq!(outcome, Outcome::Sent(Some("deny".into())));
         let _ = done.send(());
         // An event nobody waits on reads no answer, whatever the other end writes.
         let name = own_pipe("ignored");
         let (_got, done) = stand_in(&name, Then::Say("allow"));
-        let outcome = exchange(&name, "{\"hook_event_name\":\"PreToolUse\"}\n".into(), false, FIRE_AND_FORGET_BUDGET);
+        let outcome = exchange(&name, "{\"hook_event_name\":\"PreToolUse\"}\n".into(), false, FIRE_AND_FORGET_BUDGET, &|| false);
         assert_eq!(outcome, Outcome::Sent(None));
         let _ = done.send(());
     }
@@ -803,7 +1009,7 @@ mod tests {
         // pill, and the reply is Claude Code's own.
         let desktop = env_of(&[("CLAUDE_CODE_ENTRYPOINT", "claude-desktop")]);
         let args = Args::default();
-        let ev = prepare(REQUEST.as_bytes(), &args, &desktop, "/p").expect("forwarded");
+        let ev = prepare(REQUEST.as_bytes(), &args, &desktop, "/p", &[]).expect("forwarded");
         let v: Value = serde_json::from_str(ev.line.trim_end()).unwrap();
         assert_eq!(v["lintel_agent"], "claude-desktop");
         assert!(reply::takes_decisions(&args.agent));

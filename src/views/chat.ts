@@ -16,11 +16,12 @@
 import { h, svg, clear } from "./dom";
 import { menu, type MenuItem } from "../ui/components";
 import { ICONS, icon } from "../ui/icons";
-import { renderMarkdown } from "./markdown";
+import { codeCard, renderMarkdown } from "./markdown";
 import { Bridge, onEvent, type ChatContext, type ModelInfo } from "../core/bridge";
 import {
   KNOWN_CLIS, cancelTask, chatPrefs, installedClis, saveChatPrefs, scanLocal, startTask, stopAnswer,
   type FoundServer, type TaskEnded,
+  answerMcp,
 } from "../core/chat-tools";
 import {
   CLI, SEARCH_FROM, activeModel, pickModel, providerDef, searchModels, visibleProviders, withModel,
@@ -60,7 +61,20 @@ const STRINGS = {
   other: N_("Other…"),
   cancel: N_("Cancel"),
   canceled: N_("Canceled"),
+  noImage: N_("This model does not take pictures."),
+  withoutImage: N_("Send without the picture"),
+  switchInstead: N_("Switch model"),
+  remember: N_("Remember"),
+  mcpAsk: N_("{tool} from {server} wants to run with:"),
+  allow: N_("Allow"),
+  deny: N_("Deny"),
 };
+
+/** A picture the chat can send, and what a model that cannot read one says. */
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp)$/i;
+const NO_IMAGES = /image|vision|multimodal|modalit/i;
+/** Text and code the chat shows as a card when dropped. */
+const TEXT_FILE = /\.(txt|md|json|jsonc|ya?ml|toml|ini|csv|log|xml|html?|css|scss|js|mjs|cjs|jsx|ts|tsx|py|rs|go|java|kt|c|h|cpp|hpp|cs|rb|php|sh|ps1|bat|sql|lua|swift)$/i;
 
 /** A square: "stop", next to the send arrow it replaces. Only the chat uses it. */
 const STOP_ICON = "M7.5 7.5h9v9h-9z";
@@ -132,6 +146,17 @@ export function attachWindow(w: { appName: string; title: string }): boolean {
   State.chatHistory = [];
   State.droppedFile = null;
   State.promptContext = { kind: "window", appName: w.appName, title: w.title };
+  void Bridge.chatReset();
+  State.notify();
+  return true;
+}
+
+/** A picture or file made on this computer (a screenshot) joins a fresh chat, as attachWindow does. */
+export function attachFile(f: { name: string; path: string }): boolean {
+  if (State.stateOverride === "thinking" || State.pendingApproval) return false;
+  State.chatHistory = [];
+  State.droppedFile = null;
+  State.promptContext = { kind: "file", name: f.name, path: f.path };
   void Bridge.chatReset();
   State.notify();
   return true;
@@ -299,7 +324,9 @@ function buildPicker(onChange: () => void): Picker {
       return;
     }
     // Nothing is asked of a provider that has no key yet.
-    if (p.key && !(await Bridge.secretPresent(p.key))) {
+    // (A Claude gateway has a token of its own, or none.)
+    const gateway = p.id === "anthropic" && (await chatPrefs()).gatewayUrl !== "";
+    if (p.key && !gateway && !(await Bridge.secretPresent(p.key))) {
       if (ticket === request) status(t(STRINGS.noKey), true);
       return;
     }
@@ -467,6 +494,10 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     }, icon("close", 14)),
   );
 
+  // A dropped text or code file, as a code card with a copy button.
+  const fileCard = h("div", { class: "chat-file-card", style: "max-height:130px;overflow:auto;display:none" });
+  let cardPath = "";
+
   const body = h("div", { class: "chat-body" });
   let pickerWasOpen = false;
   const picker = buildPicker(() => {
@@ -494,7 +525,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     { class: "model-row" },
     taskBtn, folderBtn, folderField, picker.search, h("span", { class: "model-gap" }), clearBtn, modelBtn,
   );
-  body.append(chipRow, log, picker.el, note, modelRow, bar);
+  body.append(chipRow, fileCard, log, picker.el, note, modelRow, bar);
 
   const el = h("div", { class: "view" }, body);
 
@@ -754,6 +785,56 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     log.scrollTop = log.scrollHeight;
   });
 
+  /** A tool of an MCP server: one click per call. Resolved by the card; Stop or New chat answers no for it (Rust). */
+  void onEvent<{ id: number; server: string; tool: string; args: unknown }>("chat-mcp-approve", (ask) => {
+    const answer = (yes: boolean) => {
+      card.remove();
+      void answerMcp(ask.id, yes);
+      onHeightChange();
+    };
+    const card: HTMLElement = h(
+      "div",
+      { class: "chat-note on", role: "alert" },
+      icon("alert", 14),
+      h("span", { class: "chat-note-text", text: t(STRINGS.mcpAsk, { tool: ask.tool, server: ask.server }) }),
+      h("code", { text: JSON.stringify(ask.args).slice(0, 400) }),
+      h("button", { class: "btn sm", text: t(STRINGS.allow), onclick: () => answer(true) }),
+      h("button", { class: "btn sm ghost", text: t(STRINGS.deny), onclick: () => answer(false) }),
+    );
+    body.insertBefore(card, modelRow);
+    onHeightChange();
+  });
+
+  /** A model refused the picture: send without it, switch model, or cancel. Remembered when asked to. */
+  async function imageChoice(): Promise<"drop" | "switch" | "cancel"> {
+    const kept = (await chatPrefs()).imageRefusal;
+    if (kept) return kept;
+    State.stateOverride = null;
+    State.notify();
+    return new Promise((resolve) => {
+      const remember = h("input", { type: "checkbox", checked: "" }) as HTMLInputElement;
+      remember.checked = true;
+      const choose = (how: "drop" | "switch" | "cancel") => {
+        card.remove();
+        if (how !== "cancel" && remember.checked) void saveChatPrefs({ imageRefusal: how });
+        onHeightChange();
+        resolve(how);
+      };
+      const card: HTMLElement = h(
+        "div",
+        { class: "chat-note on", role: "alert" },
+        icon("alert", 14),
+        h("span", { class: "chat-note-text", text: t(STRINGS.noImage) }),
+        h("button", { class: "btn sm", text: t(STRINGS.withoutImage), onclick: () => choose("drop") }),
+        h("button", { class: "btn sm", text: t(STRINGS.switchInstead), onclick: () => choose("switch") }),
+        h("button", { class: "btn sm ghost", text: t(STRINGS.cancel), onclick: () => choose("cancel") }),
+        h("label", { class: "hint" }, remember, h("span", { text: t(STRINGS.remember) })),
+      );
+      body.insertBefore(card, modelRow);
+      onHeightChange();
+    });
+  }
+
   async function submit() {
     if (stoppable()) {
       stopped = true;
@@ -786,7 +867,25 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       : pc.path ? { kind: "file", name: pc.name, path: pc.path } : null;
 
     try {
-      const reply = await Bridge.chatSend(query, context);
+      let reply;
+      try {
+        reply = await Bridge.chatSend(query, context);
+      } catch (err) {
+        const refused = !stopped && context?.kind === "file" && IMAGE_FILE.test(context.name) && NO_IMAGES.test(String(err));
+        const how = refused ? await imageChoice() : "cancel";
+        if (how === "cancel") throw err;
+        if (how === "switch") {
+          // Back to the question, with the picker open; nothing is shown as an error.
+          State.chatHistory.pop();
+          input.value = query;
+          stopped = true;
+          picker.open();
+          throw err;
+        }
+        State.stateOverride = "thinking";
+        State.notify();
+        reply = await Bridge.chatSend(query, null);
+      }
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");
@@ -834,6 +933,25 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         chipRow.dataset.label = wantChip;
         clear(chipRow);
         if (wantChip) chipRow.append(contextChip(wantChip));
+      }
+
+      // A dropped text file shows as a card; its copy in the inbox is read once.
+      const file = pc?.kind === "file" && TEXT_FILE.test(pc.name) ? (pc.path ?? "") : "";
+      if (file !== cardPath) {
+        cardPath = file;
+        fileCard.style.display = "none";
+        clear(fileCard);
+        if (file) {
+          void Bridge.featureCall<string | null>("chat-plus", "read_text", { path: file }).then(
+            (text) => {
+              if (cardPath !== file || !text) return;
+              fileCard.append(codeCard(text));
+              fileCard.style.display = "";
+              onHeightChange();
+            },
+            () => {},
+          );
+        }
       }
 
       const thinking = State.stateOverride === "thinking";

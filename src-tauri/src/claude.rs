@@ -12,14 +12,18 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::Url;
+use tauri::AppHandle;
 use serde_json::{json, Value};
 
 use crate::chat::{self, Chat, ChatContext, ChatReply, ModelInfo};
 use crate::i18n::{t, tf};
+use crate::settings::Settings;
 use crate::{net, secrets};
 
 /// Credential store entry of the Anthropic API key.
 pub const KEY: &str = "anthropic-api-key";
+/// The bearer token of an Anthropic-compatible gateway (Settings → Chat → Claude).
+pub const GATEWAY_TOKEN: &str = "anthropic-gateway-token";
 const DEFAULT_ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const BASE_URL_VAR: &str = "LINTEL_ANTHROPIC_BASE_URL";
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -27,6 +31,8 @@ pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// a fallback model inside the same call, so the island never shows a dead end.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const MAX_TOKENS: u32 = 4096;
+/// Tool calls one question may chain.
+const MAX_TOOL_ROUNDS: usize = 8;
 /// Text and code files are inlined; anything larger is skipped, as on macOS.
 const MAX_INLINE_TEXT: u64 = 200_000;
 
@@ -54,6 +60,33 @@ pub(crate) fn endpoint() -> Result<Url, String> {
             resolved
         })
         .clone()
+}
+
+/// The gateway the user typed in Settings (`gatewayUrl` of the chat feature's
+/// settings): its Messages endpoint, https or this computer only. None: Anthropic
+/// (or LINTEL_ANTHROPIC_BASE_URL, which `endpoint` reads).
+pub(crate) fn gateway(settings: &Settings) -> Result<Option<Url>, String> {
+    let raw = settings.features.get("chat").and_then(|c| c.get("gatewayUrl")).and_then(Value::as_str).unwrap_or("").trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    net::anthropic_endpoint(raw).map(Some).map_err(|e| e.replace(BASE_URL_VAR, "The gateway address"))
+}
+
+/// Where a Claude request goes and with what credential. A gateway gets its own
+/// bearer token (none is fine for one on this computer), never the Anthropic key.
+struct Route {
+    url: Url,
+    key: Option<String>,
+    gateway: bool,
+}
+
+fn route(settings: &Settings) -> Result<Route, String> {
+    if let Some(url) = gateway(settings)? {
+        return Ok(Route { url, key: secrets::get(GATEWAY_TOKEN), gateway: true });
+    }
+    let key = secrets::get(KEY).ok_or_else(|| t("API key missing. Open settings."))?;
+    Ok(Route { url: endpoint()?, key: Some(key), gateway: false })
 }
 
 /// The model list endpoint next to the Messages one.
@@ -88,17 +121,21 @@ fn user_content(first: bool, context: Option<&ChatContext>, query: &str) -> Vec<
     content
 }
 
-fn request_body(model: &str, system: &str, history: &[Value], user: &Value) -> Value {
+/// Towards a gateway: no web search tool and no fallbacks, which only Anthropic's API knows.
+fn request_body(model: &str, system: &str, history: &[Value], user: &Value, gateway: bool) -> Value {
     let mut messages = history.to_vec();
     messages.push(user.clone());
-    json!({
+    let mut body = json!({
         "model": model,
         "max_tokens": MAX_TOKENS,
         "system": system,
-        "tools": [{ "type": "web_search_20260209", "name": "web_search", "max_uses": 5 }],
-        "fallbacks": "default",
         "messages": messages,
-    })
+    });
+    if !gateway {
+        body["tools"] = json!([{ "type": "web_search_20260209", "name": "web_search", "max_uses": 5 }]);
+        body["fallbacks"] = json!("default");
+    }
+    body
 }
 
 /// The assistant's full text from a Messages API content array — the same as
@@ -138,19 +175,46 @@ fn interpret(response: &Value) -> Result<(Vec<Value>, String), String> {
 /// One chat turn. Returns the assistant's text, or a message the island shows
 /// in the note view.
 pub async fn send(
+    app: &AppHandle,
     chat: &Chat,
+    settings: &Settings,
     model: &str,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let key = secrets::get(KEY).ok_or_else(|| t("API key missing. Open settings."))?;
-    let endpoint = endpoint()?;
+    let route = route(settings)?;
 
     let turn = chat.begin(chat::ANTHROPIC);
     let user = json!({ "role": "user", "content": user_content(turn.first, context.as_ref(), &query) });
-    let body = request_body(model, &chat::system_prompt(true), &turn.history, &user);
+    let mut body = request_body(model, &chat::system_prompt(!route.gateway), &turn.history, &user, route.gateway);
 
-    let response = call(&endpoint, &key, &body).await?;
+    // Tools of the MCP servers the user turned on: started now, stopped when idle.
+    let on = chat::mcp::enabled(settings);
+    let tools = if on.is_empty() { Vec::new() } else { tauri::async_runtime::spawn_blocking(move || chat::mcp::tools_for(&on)).await.unwrap_or_default() };
+    if !tools.is_empty() {
+        let list = body["tools"].as_array_mut().map(std::mem::take).unwrap_or_default();
+        body["tools"] = Value::Array(list.into_iter().chain(tools.iter().map(|t| t.def.clone())).collect());
+    }
+
+    let mut response = call(&route, &body).await?;
+    // The model asks for a tool: one click per call, then it goes on with the result.
+    for _ in 0..MAX_TOOL_ROUNDS {
+        if tools.is_empty() || response.get("stop_reason").and_then(Value::as_str) != Some("tool_use") {
+            break;
+        }
+        let content = response["content"].clone();
+        let mut results = Vec::new();
+        for b in content.as_array().into_iter().flatten().filter(|b| b["type"] == "tool_use") {
+            results.push(run_tool(app, &tools, b).await);
+        }
+        let messages = body["messages"].as_array_mut().expect("messages");
+        messages.push(json!({ "role": "assistant", "content": content }));
+        messages.push(json!({ "role": "user", "content": results }));
+        response = call(&route, &body).await?;
+    }
+    if !tools.is_empty() {
+        chat::mcp::idle_later();
+    }
     let (blocks, text) = interpret(&response)?;
 
     // Store the whole content — tool_use / tool_result blocks included — so the
@@ -160,16 +224,38 @@ pub async fn send(
     Ok(ChatReply { text, task: None })
 }
 
+/// One `tool_use` block of the reply, answered with a `tool_result`: after the user's click.
+async fn run_tool(app: &AppHandle, tools: &[chat::mcp::Tool], block: &Value) -> Value {
+    let id = block["id"].clone();
+    let result = |text: String, error: bool| json!({ "type": "tool_result", "tool_use_id": id, "content": text, "is_error": error });
+    let Some(tool) = block["name"].as_str().and_then(|n| tools.iter().find(|t| t.api_name == n)) else {
+        return result("Unknown tool.".into(), true);
+    };
+    let input = block["input"].clone();
+    if !chat::mcp::approve(app, &tool.server, &tool.name, &input).await {
+        return result("The user did not allow this call.".into(), true);
+    }
+    let (server, name) = (tool.server.clone(), tool.name.clone());
+    match tauri::async_runtime::spawn_blocking(move || chat::mcp::call(&server, &name, &input)).await {
+        Ok(Ok(text)) => result(text, false),
+        Ok(Err(why)) => result(why, true),
+        Err(e) => result(e.to_string(), true),
+    }
+}
+
 // The key rides in x-api-key, a header reqwest would keep on a redirect to
 // another host, and the address may come from LINTEL_ANTHROPIC_BASE_URL: no
 // redirect is followed (net::keyed_client).
-async fn call(endpoint: &Url, key: &str, body: &Value) -> Result<Value, String> {
-    let response = net::keyed_client(endpoint, Duration::from_secs(90))?
-        .post(endpoint.clone())
-        .header("x-api-key", key)
+async fn call(route: &Route, body: &Value) -> Result<Value, String> {
+    let mut request = net::keyed_client(&route.url, Duration::from_secs(90))?
+        .post(route.url.clone())
         .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("anthropic-beta", FALLBACK_BETA)
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    request = authorised(request, route);
+    if !route.gateway {
+        request = request.header("anthropic-beta", FALLBACK_BETA);
+    }
+    let response = request
         .json(body)
         .send()
         .await
@@ -185,14 +271,26 @@ async fn call(endpoint: &Url, key: &str, body: &Value) -> Result<Value, String> 
     serde_json::from_slice(&bytes).map_err(|e| tf("Bad API response: {error}", &[("error", &e.to_string())]))
 }
 
-/// The models on the user's Anthropic account, newest first, as the API lists them.
-pub async fn models(key: &str) -> Result<Vec<ModelInfo>, String> {
-    let url = models_endpoint(&endpoint()?);
-    let response = net::keyed_client(&url, Duration::from_secs(10))?
-        .get(url.clone())
-        .header("x-api-key", key)
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .send()
+/// Anthropic's x-api-key; a gateway's bearer token.
+fn authorised(request: reqwest::RequestBuilder, route: &Route) -> reqwest::RequestBuilder {
+    match (&route.key, route.gateway) {
+        (Some(key), true) => request.bearer_auth(key),
+        (Some(key), false) => request.header("x-api-key", key),
+        (None, _) => request,
+    }
+}
+
+/// The models on the user's Anthropic account (or gateway), newest first, as the API lists them.
+pub async fn models(settings: &Settings) -> Result<Vec<ModelInfo>, String> {
+    let route = route(settings)?;
+    let url = models_endpoint(&route.url);
+    let response = authorised(
+        net::keyed_client(&url, Duration::from_secs(10))?
+            .get(url.clone())
+            .header("anthropic-version", ANTHROPIC_VERSION),
+        &route,
+    )
+    .send()
         .await
         .map_err(|e| tf("Network error: {error}", &[("error", &e.to_string())]))?;
     let status = response.status();
@@ -339,7 +437,8 @@ mod tests {
     fn the_request_carries_history_web_search_and_the_new_turn_last() {
         let history = vec![json!({"role":"user","content":"a"}), json!({"role":"assistant","content":"b"})];
         let user = json!({"role":"user","content":[{"type":"text","text":"c"}]});
-        let body = request_body("claude-x", "sys", &history, &user);
+        let body = request_body("claude-x", "sys", &history, &user, false);
+        assert!(request_body("claude-x", "sys", &history, &user, true).get("tools").is_none());
         assert_eq!(body["model"], "claude-x");
         assert_eq!(body["system"], "sys");
         assert_eq!(body["max_tokens"], MAX_TOKENS);

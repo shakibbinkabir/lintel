@@ -76,6 +76,7 @@ function buildCaptures(cx: FeatureCtx): SectionHost {
   let selected: string | null = null;
   let result: Result | null = null;
   let pins: Pins = { count: 0, through: 0 };
+  let canRead = false;
   /** One of ours is on its way out of the island. */
   let dragging = false;
   /** A line for the bottom row instead of the capture's size ("Copied"). */
@@ -124,6 +125,13 @@ function buildCaptures(cx: FeatureCtx): SectionHost {
   const copyBtn = small("copy", t("Copy"), "secondary", () => copy(current()));
   const saveBtn = small("download", t("Save"), "secondary", () => save(current()));
   const pinBtn = small("pin", t("Pin"), "secondary", act("pin"));
+  const ocrBtn = small("copy", t("Copy text"), "secondary", () => {
+    const shot = current();
+    if (!shot) return;
+    say(t("Reading…"));
+    void cx.call<number>("copy_ocr", { id: shot.id }).then((n) => say(n ? t("Text copied") : t("No text found"), 2000));
+  });
+  ocrBtn.hidden = true; // until Windows says it can read text
   const editBtn = small("M4 20l1-4.5L16.5 4a2.1 2.1 0 0 1 3 3L8 18.5zM14.5 6l3 3", t("Edit"), "secondary", () => {
     const shot = current();
     if (shot) void Bridge.featureCall("editor", "open", { capture: shot.name });
@@ -142,7 +150,7 @@ function buildCaptures(cx: FeatureCtx): SectionHost {
     paint();
   });
   doneBtn.classList.add("sm");
-  const shotBtns = [copyBtn, saveBtn, pinBtn, editBtn, shareBtn, clearBtn];
+  const shotBtns = [copyBtn, ocrBtn, saveBtn, pinBtn, editBtn, shareBtn, clearBtn];
   const el = h(
     "div",
     { class: "f-capture-page" },
@@ -183,8 +191,8 @@ function buildCaptures(cx: FeatureCtx): SectionHost {
       ? resultText(result)
       : note || (shot ? [`${shot.w} × ${shot.h}`, time(shot.at), shot.saved ? t("saved") : ""].filter(Boolean).join(" · ") : "");
     meta.title = result?.text ?? shot?.saved ?? "";
-    for (const b of shotBtns) b.hidden = !!result;
-    for (const b of [copyBtn, saveBtn, pinBtn, editBtn, shareBtn]) b.disabled = !shot;
+    for (const b of shotBtns) b.hidden = !!result || (b === ocrBtn && !canRead);
+    for (const b of [copyBtn, ocrBtn, saveBtn, pinBtn, editBtn, shareBtn]) b.disabled = !shot;
     clearBtn.disabled = shots.length === 0;
     (saveBtn.lastChild as HTMLElement).textContent = shot?.saved ? t("Show in folder") : t("Save");
     openBtn.hidden = !(result?.kind === "qr" && result.link);
@@ -363,7 +371,10 @@ function buildCaptures(cx: FeatureCtx): SectionHost {
       });
       // Without a language Windows can read, the text tool only reads codes.
       void cx.call<{ ocr: boolean }>("caps").then((caps) => {
-        if (caps) (textBtn.lastChild as HTMLElement).textContent = caps.ocr ? t("Text") : t("QR code");
+        if (!caps) return;
+        (textBtn.lastChild as HTMLElement).textContent = caps.ocr ? t("Text") : t("QR code");
+        canRead = caps.ocr;
+        paint();
       });
     },
     hide() {
@@ -421,7 +432,7 @@ function mountPin(root: HTMLElement, cx: FeatureCtx) {
   const label = windowLabel();
   const image = h("img", { alt: "", draggable: "false" });
   root.className = "f-capture-pin";
-  root.title = cx.t("Drag to move. Double-click to close. Scroll to fade. Right-click to let clicks through.");
+  root.title = cx.t("Drag to move. Double-click to close. Scroll to zoom, Alt+scroll to fade, Ctrl+drag to take the file. Right-click to let clicks through.");
   root.append(image);
   void cx.call<{ url: string }>("pin_image", { label }).then((picture) => {
     if (picture) image.src = picture.url;
@@ -430,18 +441,21 @@ function mountPin(root: HTMLElement, cx: FeatureCtx) {
 
   let opacity = 1;
   root.addEventListener("wheel", (e) => {
-    opacity = Math.max(0.2, Math.min(1, opacity + (e.deltaY < 0 ? 0.1 : -0.1)));
-    image.style.opacity = String(opacity);
+    if (e.altKey) {
+      opacity = Math.max(0.2, Math.min(1, opacity + (e.deltaY < 0 ? 0.1 : -0.1)));
+      image.style.opacity = String(opacity);
+    } else void cx.call("pin_zoom", { label, k: e.deltaY < 0 ? 1.1 : 1 / 1.1 });
   });
   root.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     if (e.detail >= 2) return void cx.call("pin_close", { label });
     const { clientX: x, clientY: y } = e;
+    const file = e.ctrlKey;
     const move = (m: MouseEvent) => {
       if (Math.hypot(m.clientX - x, m.clientY - y) < 3) return;
       done();
-      // Rust moves the window with the pointer until the button is let go.
-      void cx.call("pin_move", { label });
+      // Rust moves the window with the pointer until the button is let go; with Ctrl, the file is dragged out instead.
+      void cx.call(file ? "drag" : "pin_move", { label });
     };
     const done = () => {
       window.removeEventListener("mousemove", move);

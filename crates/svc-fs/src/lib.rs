@@ -8,6 +8,7 @@
 //   refusal(root, path)            why a path would be refused (it only answers)
 //   size(&found, cancel)           bytes of a file or a folder; links are never followed
 //   measure(&found, cancel)        the same, and when the newest thing in it was made or written
+//   adopt(&rule, path)             a file the caller's own walk met under the rule's root, checked like a find
 //   dir_size(path, cancel)
 //   recycle_bin()                  how much lies in the Recycle Bin (bytes, items)
 //
@@ -369,6 +370,18 @@ pub fn find(rule: &Rule, keep: impl Fn(&Path) -> bool) -> Vec<Found> {
             Some(Found { id: file_id(&path)?, root: root.clone(), dir: meta.is_dir(), len: meta.len(), modified: meta.modified().ok(), created: meta.created().ok(), path })
         })
         .collect()
+}
+
+/// A file under the rule's root that the caller's own walk came across (the
+/// duplicate finder reads many folders and cannot name a pattern). Every check
+/// of `find` is made here: nothing is listed that `recycle` would refuse.
+pub fn adopt(rule: &Rule, path: &Path) -> Option<Found> {
+    let root = rule.root_path()?;
+    if !root.is_dir() || linked(&root) || refusal(&root, path).is_some() {
+        return None;
+    }
+    let meta = path.symlink_metadata().ok().filter(|m| m.is_file())?;
+    Some(Found { id: file_id(path)?, root, dir: false, len: meta.len(), modified: meta.modified().ok(), created: meta.created().ok(), path: path.to_path_buf() })
 }
 
 // ── Sizes ─────────────────────────────────────────────────────────────────────

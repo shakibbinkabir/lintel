@@ -1,5 +1,20 @@
 {
   "strings": {
+    "Start while agents work": {
+      "en": "Start while agents work"
+    },
+    "A session runs while an agent works, and for a few quiet minutes after.": {
+      "en": "A session runs while an agent works, and for a few quiet minutes after."
+    },
+    "Quiet minutes after agents": {
+      "en": "Quiet minutes after agents"
+    },
+    "Brightness keys move every display": {
+      "en": "Brightness keys move every display"
+    },
+    "The shortcuts step all displays by the same amount, keeping the gaps between them.": {
+      "en": "The shortcuts step all displays by the same amount, keeping the gaps between them."
+    },
     "Keep awake": {
       "en": "Keep awake",
       "zh-Hans": "保持唤醒",

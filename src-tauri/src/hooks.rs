@@ -1,7 +1,7 @@
 // Claude Code hook installation.
 //
 // The rule from CLAUDE.md is strict and is followed to the letter:
-// read %USERPROFILE%\.claude\settings.json, take a dated backup, merge without
+// read %USERPROFILE%\.claude\settings.json (or CLAUDE_CONFIG_DIR's), take a dated backup, merge without
 // touching anybody else's hooks, show the diff, and write only after an explicit
 // click. Uninstall removes Lintel's entries and nothing else.
 //
@@ -74,7 +74,45 @@ pub struct HookPreview {
 }
 
 pub fn settings_path() -> PathBuf {
-    platform::home_dir().join(".claude").join("settings.json")
+    claude_dir(std::env::var_os("CLAUDE_CONFIG_DIR"), &platform::home_dir()).join("settings.json")
+}
+
+/// Claude Code's own folder, read as Claude Code reads it: `CLAUDE_CONFIG_DIR`
+/// when the user moved it, else `~/.claude`. Hooks written anywhere else never
+/// run. (After upstream pull request 810.)
+fn claude_dir(config_dir: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+    match config_dir {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => home.join(".claude"),
+    }
+}
+
+/// Claude Code sessions running when Lintel starts: `(session id, folder)` from
+/// Claude Code's own `sessions/<pid>.json`, kept only when that process still
+/// runs. Own user's folder, read only; the pills come at once instead of at
+/// the session's next event. (After upstream pull request 516.)
+pub fn running_sessions() -> Vec<(String, String)> {
+    let dir = claude_dir(std::env::var_os("CLAUDE_CONFIG_DIR"), &platform::home_dir()).join("sessions");
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let procs = notch_core::win::process_table();
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(v) = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else { continue };
+        let (Some(pid), Some(id), Some(cwd)) = (v["pid"].as_u64(), v["sessionId"].as_str(), v["cwd"].as_str()) else { continue };
+        if v["kind"].as_str().is_some_and(|k| k != "interactive") {
+            continue;
+        }
+        // A reused process id is not the session: only the runtimes Claude Code runs as count.
+        let alive = procs.get(&(pid as u32)).is_some_and(|x| matches!(x.exe.to_ascii_lowercase().as_str(), "claude.exe" | "node.exe" | "bun.exe"));
+        if alive && !id.is_empty() {
+            out.push((id.to_string(), cwd.to_string()));
+        }
+    }
+    out
 }
 
 /// The settings as they are, or an empty object when we cannot tell. Only for
@@ -172,6 +210,12 @@ fn users_own(line: &Value) -> Option<Value> {
 /// `hooks` (or one of its events) that is not what Claude Code documents is
 /// refused rather than replaced. `launch`: see `event_command`.
 fn merged(existing: &Value, launch: bool) -> Result<Value, String> {
+    merged_with(existing, &|event| event_command(event, launch))
+}
+
+/// `merged` with the command each event runs: this machine's relay, or the one a
+/// WSL distro (wsl.rs) or an SSH host (remote.rs) reaches it by.
+pub fn merged_with(existing: &Value, command: &dyn Fn(&str) -> String) -> Result<Value, String> {
     let mut root = existing.as_object().cloned().unwrap_or_default();
     let mut hooks = match root.get("hooks") {
         None => Map::new(),
@@ -189,7 +233,7 @@ fn merged(existing: &Value, launch: bool) -> Result<Value, String> {
         list.push(json!({
             "hooks": [{
                 "type": "command",
-                "command": event_command(event, launch),
+                "command": command(event),
                 "timeout": timeout,
             }]
         }));
@@ -205,7 +249,7 @@ fn unexpected(what: &str) -> String {
 }
 
 /// Settings with every Lintel entry removed, and nothing else changed.
-fn without_ours(existing: &Value) -> Result<Value, String> {
+pub fn without_ours(existing: &Value) -> Result<Value, String> {
     let mut root = existing.as_object().cloned().unwrap_or_default();
     let hooks = match root.get("hooks") {
         None => return Ok(Value::Object(root)),
@@ -254,17 +298,7 @@ fn edits(install: bool, launch: Option<bool>) -> Vec<FileEdit<'static>> {
 
 pub fn status() -> HookStatus {
     let current = read_settings_lossy();
-    let installed = current
-        .get("hooks")
-        .and_then(Value::as_object)
-        .map(|hooks| {
-            hooks
-                .values()
-                .filter_map(Value::as_array)
-                .flatten()
-                .any(entry_is_ours)
-        })
-        .unwrap_or(false);
+    let installed = has_ours(&current);
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,
@@ -297,6 +331,46 @@ fn plan_to_preview(plan: config_file::Plan) -> HookPreview {
 /// `launch` is what the preview was asked with.
 pub fn write(install: bool, fingerprint: &str, launch: Option<bool>) -> Result<String, String> {
     let backups = config_file::apply(&edits(install, launch), fingerprint)?;
+    Ok(backups.first().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+}
+
+// ── Claude Code in WSL ────────────────────────────────────────────────────────
+//
+// The same hooks, in a WSL distro's own ~/.claude/settings.json, which Windows
+// reaches as \\wsl.localhost\<distro>\home\<user>\.claude\. Only the command
+// differs: it starts lintel-hook.exe through WSL interop (wsl.rs). The reading,
+// the diff, the dated backup and the fingerprint are the same code. (After
+// upstream pull request 763.)
+
+/// True when one of Lintel's entries is in `settings`' hooks.
+pub fn has_ours(settings: &Value) -> bool {
+    settings
+        .get("hooks")
+        .and_then(Value::as_object)
+        .is_some_and(|hooks| hooks.values().filter_map(Value::as_array).flatten().any(entry_is_ours))
+}
+
+fn wsl_edits(target: crate::wsl::Target, install: bool) -> Vec<FileEdit<'static>> {
+    let relay = target.relay;
+    vec![FileEdit {
+        path: target.settings_path,
+        edit: config_file::json_edit("settings.json".into(), move |current| {
+            if install {
+                merged_with(current, &|event| crate::wsl::relay_command(&relay, event)).map(Some)
+            } else {
+                without_ours(current).map(Some)
+            }
+        }),
+    }]
+}
+
+pub fn wsl_preview(distro: &str, user: &str, install: bool) -> Result<HookPreview, String> {
+    Ok(plan_to_preview(config_file::preview(&wsl_edits(crate::wsl::resolve(distro, user)?, install))?))
+}
+
+/// As `write`, for a distro's settings.json; returns where the backup went.
+pub fn wsl_write(distro: &str, user: &str, install: bool, fingerprint: &str) -> Result<String, String> {
+    let backups = config_file::apply(&wsl_edits(crate::wsl::resolve(distro, user)?, install), fingerprint)?;
     Ok(backups.first().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
 }
 
@@ -661,6 +735,14 @@ mod tests {
         assert_eq!(without_ours(&on).unwrap(), theirs);
     }
 
+    #[test]
+    fn a_moved_claude_folder_is_where_the_settings_are() {
+        let home = Path::new("C:/Users/me");
+        assert_eq!(claude_dir(None, home), home.join(".claude"));
+        assert_eq!(claude_dir(Some("".into()), home), home.join(".claude"));
+        assert_eq!(claude_dir(Some("E:/Claude/data".into()), home), PathBuf::from("E:/Claude/data"));
+    }
+
     /// Everything filesystem-shaped lives in one test on purpose: it points
     /// the home directory at a temp directory, and that is process-wide.
     #[test]
@@ -669,6 +751,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join(".claude")).unwrap();
         std::env::set_var(notch_core::win::HOME_VAR, &tmp);
+        // A moved Claude folder would point outside the temp directory.
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
 
         let path = settings_path();
         assert!(path.starts_with(&tmp), "the test must not touch the real home");

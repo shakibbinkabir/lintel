@@ -504,11 +504,17 @@
       "ru": "Вкл.",
       "id": "Aktif"
     },
-    "Waiting for a signed build": {
-      "en": "Waiting for a signed build"
+    "On, reading pop-ups": {
+      "en": "On, reading pop-ups"
     },
-    "Windows lets an app read the notifications of other apps only when it is signed and packaged. This build of Lintel is not, so mirroring cannot be turned on yet. Nothing is read.": {
-      "en": "Windows lets an app read the notifications of other apps only when it is signed and packaged. This build of Lintel is not, so mirroring cannot be turned on yet. Nothing is read."
+    "Lintel reads the pop-up of each notification as Windows shows it, so a notification that Windows hides (Focus, Do Not Disturb) is not seen. A click brings the app forward; the buttons of the original pop-up cannot be pressed from here.": {
+      "en": "Lintel reads the pop-up of each notification as Windows shows it, so a notification that Windows hides (Focus, Do Not Disturb) is not seen. A click brings the app forward; the buttons of the original pop-up cannot be pressed from here."
+    },
+    "Show notifications from other apps (read as they pop up)": {
+      "en": "Show notifications from other apps (read as they pop up)"
+    },
+    "Shows the notifications of your other apps on the island and keeps the last {count} in memory until you clear them or quit Lintel. Lintel reads the app, title and text of each pop-up as Windows shows it; nothing leaves this PC and nothing is saved to disk. Off by default.": {
+      "en": "Shows the notifications of your other apps on the island and keeps the last {count} in memory until you clear them or quit Lintel. Lintel reads the app, title and text of each pop-up as Windows shows it; nothing leaves this PC and nothing is saved to disk. Off by default."
     }
   }
 }

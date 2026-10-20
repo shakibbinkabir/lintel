@@ -55,6 +55,7 @@ function listEditor(cx: FeatureCtx, list: Item[], depth: number, save: (now?: bo
       ["media", cx.t("Media")],
       ["nowplaying", cx.t("Now playing")],
       ["shortcut", cx.t("Shortcut keys")],
+      ["command", cx.t("Command or script")],
     ];
     // One level of submenus, as upstream.
     if (depth === 0) all.push(["submenu", cx.t("Group")]);
@@ -97,7 +98,7 @@ function listEditor(cx: FeatureCtx, list: Item[], depth: number, save: (now?: bo
       default: {
         const f = field({
           value: it.target,
-          placeholder: it.kind === "file" ? cx.t("Path, folder or shell: location") : it.kind === "link" ? cx.t("Address") : cx.t("Keys, such as Ctrl+Shift+S"),
+          placeholder: it.kind === "file" ? cx.t("Path, folder or shell: location") : it.kind === "link" ? cx.t("Address") : it.kind === "command" ? cx.t("Command line or script path, run when you pick the slice") : cx.t("Keys, such as Ctrl+Shift+S"),
           onInput: (v) => {
             it.target = v;
             f.classList.toggle("invalid", !v.trim());

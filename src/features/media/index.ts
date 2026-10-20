@@ -16,6 +16,8 @@ import { h } from "../../views/dom";
 interface Source {
   aumid: string;
   name: string;
+  /** What the session plays: tells two tabs of one browser apart. */
+  title: string;
   playing: boolean;
 }
 
@@ -591,7 +593,7 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
           void cx.call("pick", { aumid });
           pick.firstElementChild!.textContent = name;
         };
-        const open = (s?.sources ?? []).map((p) => ({ label: p.name, icon: p.playing ? "play" : undefined, onClick: choose(p.aumid, p.name) }));
+        const open = (s?.sources ?? []).map((p) => ({ label: p.title ? `${p.title} · ${p.name}` : p.name, icon: p.playing ? "play" : undefined, onClick: choose(p.aumid, p.name) }));
         menu([{ label: whoever, onClick: choose(null, whoever) }, ...(open.length ? [null, ...open] : [])], { x: at.left, y: at.bottom + 4 });
       });
     });

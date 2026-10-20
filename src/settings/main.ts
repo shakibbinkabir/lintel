@@ -6,7 +6,7 @@ import { BRAND } from "../core/brand";
 import "./settings.css";
 import { Bridge, onEvent, type FeatureInfo, type HookPreview, type HookStatus, type ShortcutsReport } from "../core/bridge";
 import {
-  KNOWN_CLIS, chatPrefs, ghLoginOn, installedClis, pulseThroughGh, saveChatPrefs, scanLocal, setGhLogin,
+  KNOWN_CLIS, chatPrefs, ghLoginOn, installedClis, mcpServers, pulseThroughGh, saveChatPrefs, scanLocal, setGhLogin,
   type ChatPrefs, type FoundServer,
 } from "../core/chat-tools";
 import { CLI, CUSTOM_SERVER_KEY, keyAddress, providerDef, urlExposure } from "../core/providers";
@@ -29,6 +29,7 @@ import { showOnboarding } from "../features/misc-late/onboarding";
 import { privacySection } from "../features/misc-late/privacy";
 import { sections } from "../island/sections";
 import { agentsSection } from "./agents";
+import { sshSection, wslSection } from "./remote";
 import { colorDot } from "./colors";
 import { renderDiff, statusDot } from "./parts";
 import {
@@ -232,6 +233,13 @@ function claudeSection(status: HookStatus): HTMLElement {
       }));
     }
     body.append(actions);
+    body.append(
+      h("div", { class: "line" },
+        h("label", { text: t("Show another session's finish for a moment") }),
+        toggle(settings.peekFinished, (v) => { settings.peekFinished = v; void save(); }),
+      ),
+      h("div", { class: "hint", text: t("When a session you are not looking at finishes or fails, its card opens for a few seconds and the pill you were on comes back. Never over an approval or a question.") }),
+    );
 
     // Opt-in, and only with the hooks in place: it is those hooks that start the app.
     if (status.installed && status.hookReady) {
@@ -422,6 +430,82 @@ function apiSection(hasKey: boolean): HTMLElement {
     h("div", { class: "line" }, h("label", { text: t("API key") }), field, saveBtn, clearBtn),
     h("div", { class: "line" }, h("label", { text: t("Model") }), model),
     feedback,
+  );
+}
+
+// ── Gateway and agenda (chat feature's own settings) ──────────────────────────
+
+/** Claude through an Anthropic-compatible gateway, and the opt-in calendar agenda for the chat. */
+async function chatExtrasSection(prefs: ChatPrefs): Promise<HTMLElement> {
+  const url = h("input", {
+    type: "text", placeholder: "https://gateway.example.com", value: prefs.gatewayUrl,
+    style: "flex:1 1 auto;min-width:0", spellcheck: "false", autocomplete: "off",
+  }) as HTMLInputElement;
+  const hasToken = (await Bridge.secretPresent("anthropic-gateway-token")) ?? false;
+  const token = h("input", {
+    type: "password", placeholder: hasToken ? `••••••••••••  ${t("(stored)")}` : t("Bearer token (optional)"),
+    style: "flex:1 1 auto;min-width:0", autocomplete: "off", spellcheck: "false",
+  }) as HTMLInputElement;
+  const feedback = h("div", {});
+  const note = (ok: boolean, text: string) => {
+    clear(feedback);
+    feedback.append(h("div", { class: ok ? "notice ok" : "notice err", text }));
+  };
+  const save = h("button", { class: "btn primary", text: t("Save") });
+  save.addEventListener("click", async () => {
+    const value = url.value.trim();
+    // Only https, or http to this computer: the key goes where this points.
+    try {
+      if (value) {
+        const u = new URL(value);
+        const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+        if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) throw new Error();
+      }
+    } catch {
+      note(false, t("The address must start with https:// (http:// only to this computer)."));
+      return;
+    }
+    try {
+      if (token.value.trim()) await Bridge.secretSet("anthropic-gateway-token", token.value.trim());
+      else if (!value) await Bridge.secretClear("anthropic-gateway-token");
+      token.value = "";
+      await saveChatPrefs({ gatewayUrl: value });
+      note(true, value ? t("Saved. Claude now goes through this gateway.") : t("Saved. Claude goes to Anthropic."));
+    } catch (err) {
+      note(false, t("Could not save: {error}", { error: String(err) }));
+    }
+  });
+  return h(
+    "section",
+    {},
+    h("h2", { class: "section-title" }, h("span", { text: t("Claude gateway") })),
+    h("div", { class: "hint", text: t("Optional. Send Claude to an Anthropic-compatible gateway instead of Anthropic: its address and a bearer token. Web search is not asked of a gateway. The token stays in the system keychain.") }),
+    h("div", { class: "line" }, h("label", { text: t("Address") }), url),
+    h("div", { class: "line" }, h("label", { text: t("Token") }), token, save),
+    feedback,
+    h("h2", { class: "section-title" }, h("span", { text: t("Today's agenda") })),
+    h("div", { class: "hint", text: t("Let the chat read today's events from your Calendar. They go to the provider you chat with, with each question, and only while this is on.") }),
+    h("div", { class: "line" }, h("label", { text: t("Share today's agenda with the chat") }),
+      toggle(prefs.calendarAgenda, (on) => { prefs.calendarAgenda = on; void saveChatPrefs({ calendarAgenda: on }); })),
+  );
+}
+
+/** MCP servers other apps set up: which the Claude chat may use. Each tool call still asks. */
+async function mcpSection(prefs: ChatPrefs): Promise<HTMLElement> {
+  const found = await mcpServers();
+  const rows = found.map((s) =>
+    h("div", { class: "line" },
+      h("label", { text: `${s.id} · ${s.source}`, title: s.command }),
+      toggle(prefs.mcpServers.includes(s.id), (on) => {
+        prefs.mcpServers = on ? [...prefs.mcpServers, s.id] : prefs.mcpServers.filter((x) => x !== s.id);
+        void saveChatPrefs({ mcpServers: prefs.mcpServers });
+      })));
+  return h(
+    "section",
+    {},
+    h("h2", { class: "section-title" }, h("span", { text: t("MCP tools") })),
+    h("div", { class: "hint", text: t("MCP servers you set up in Claude Desktop, Cursor, VS Code or Claude Code are listed here (their files are only read). A server you turn on is started when Claude needs its tools and stopped when idle; every call asks for a click first. Claude only.") }),
+    ...(rows.length ? rows : [h("div", { class: "hint", text: t("None found.") })]),
   );
 }
 
@@ -916,8 +1000,12 @@ const INTEGRATIONS: IntegrationDef[] = [
   { id: "integration_stripe", name: "Stripe", color: "#0570DE",
     fields: [{ key: "stripe-api-key", label: N_("Secret key"), placeholder: "sk_live_…", secret: true }] },
   { id: "integration_github", name: "GitHub", color: "#F4505E",
-    fields: [{ key: "github-token", label: N_("Token"), placeholder: "ghp_…", secret: true }],
-    hint: N_("Classic token with the repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions.") },
+    fields: [
+      { key: "github-token", label: N_("Token"), placeholder: "ghp_…", secret: true },
+      { key: "forge-url", label: N_("GitLab or Gitea"), placeholder: "https://gitlab.example.com", secret: false },
+      { key: "forge-token", label: N_("Its token"), placeholder: "…", secret: true },
+    ],
+    hint: N_("Classic token with the repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions. A GitLab or Gitea address and token (https only) add its merge requests, reviews and pipelines to the same card.") },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
     fields: [{ key: "vercel-token", label: N_("Token"), placeholder: "…", secret: true }] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38",
@@ -931,6 +1019,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "notion-api-key", label: N_("Integration token"), placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
     fields: [{ key: "calcom-api-key", label: N_("API key"), placeholder: "cal_…", secret: true }] },
+  { id: "integration_linear", name: "Linear", color: "#5E6AD2",
+    fields: [{ key: "linear-api-key", label: N_("API key"), placeholder: "lin_api_…", secret: true }] },
 ];
 
 const MAX_ACTIVE = MAX_DECLARED;
@@ -1265,6 +1355,11 @@ function islandPage(): HTMLElement[] {
         toggle(settings.stripClock, (v) => { settings.stripClock = v; void save(); }),
         t("The time and the day on the resting strip."),
       ),
+      row(
+        t("Agents and plan limits on the strip"),
+        toggle(settings.stripStats, (v) => { settings.stripStats = v; void save(); }),
+        t("How many agents are at work, and the 5-hour use of each plan, on the resting strip."),
+      ),
     ]),
     h("div", { class: "section-title", text: t("Appearance") }),
     card([
@@ -1317,7 +1412,7 @@ function mascotPage(): HTMLElement[] {
 
 function soundsPage(): HTMLElement[] {
   const volume = h("input", {
-    type: "range", min: "0", max: "0.2", step: "0.005",
+    type: "range", min: "0", max: "0.5", step: "0.01",
     value: String(settings.soundVolume),
   }) as HTMLInputElement;
   volume.addEventListener("input", () => {
@@ -1339,6 +1434,25 @@ function soundsPage(): HTMLElement[] {
     text: t("Reload sounds"),
     onclick: () => void Bridge.reloadSounds().then(() => window.setTimeout(countCustom, 300)),
   });
+  // Your own file for any one sound, or back to the built-in one.
+  const which = h("select", {}) as HTMLSelectElement;
+  for (const n of SOUND_NAMES) which.append(h("option", { value: n, text: n }));
+  const picker = h("input", { type: "file", accept: "audio/*", style: "display:none" }) as HTMLInputElement;
+  picker.addEventListener("change", async () => {
+    const f = picker.files?.[0];
+    picker.value = "";
+    if (!f) return;
+    const ext = f.name.split(".").pop() ?? "";
+    const ok = await Bridge.setCustomSound(which.value, ext, new Uint8Array(await f.arrayBuffer()));
+    customCount.textContent = ok ? "" : t("That file can't be used (audio, up to 8 MB).");
+    if (ok) void Bridge.reloadSounds().then(() => window.setTimeout(countCustom, 300));
+  });
+  const chooseFile = h("button", { class: "btn secondary", text: t("Choose file…"), onclick: () => picker.click() });
+  const resetSound = h("button", {
+    class: "btn secondary",
+    text: t("Reset"),
+    onclick: () => void Bridge.resetCustomSound(which.value).then(() => Bridge.reloadSounds()).then(() => window.setTimeout(countCustom, 300)),
+  });
   return [
     card([
       row(
@@ -1346,6 +1460,7 @@ function soundsPage(): HTMLElement[] {
         h("span", { class: "line" }, volume, toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); })),
       ),
       h("div", { class: "line", style: "padding:var(--s-2) 0" }, soundsFolder, reloadSounds, customCount),
+      h("div", { class: "line", style: "padding:var(--s-2) 0" }, which, chooseFile, resetSound, picker),
     ]),
     h("div", { class: "hint", text: t("Drop a file named like one of the built-in sounds (finish.wav, approval.mp3, greet.m4a…) in the sounds folder to replace it, then Reload.") }),
   ];
@@ -1653,7 +1768,7 @@ async function agentsBody(): Promise<Node[]> {
   const status = (await Bridge.hooksStatus()) ?? {
     installed: false, planRelayInstalled: false, autoLaunch: false, settingsPath: "", hookPath: "", hookReady: false,
   };
-  return [claudeSection(status), agentsSection(await Bridge.agentHooksList()), planSection(status)];
+  return [claudeSection(status), agentsSection(await Bridge.agentHooksList()), wslSection(), sshSection(), planSection(status)];
 }
 
 async function chatBody(): Promise<Node[]> {
@@ -1667,7 +1782,7 @@ async function chatBody(): Promise<Node[]> {
   const prefs = await chatPrefs();
   const installed = new Set((await installedClis()).map((cli) => cli.id));
   return [
-    apiSection(hasKey), chatProvidersSection(chatKeys, () => {}, prefs), localSection(customKey),
+    apiSection(hasKey), await chatExtrasSection(prefs), await mcpSection(prefs), chatProvidersSection(chatKeys, () => {}, prefs), localSection(customKey),
     cliSection(prefs, installed),
   ];
 }
@@ -1676,8 +1791,8 @@ async function integrationsBody(): Promise<Node[]> {
   sanitize();
   const present: Record<string, boolean> = {};
   for (const k of [
-    "stripe-api-key", "github-token", "vercel-token",
-    "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
+    "stripe-api-key", "github-token", "forge-url", "forge-token", "vercel-token",
+    "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key", "linear-api-key",
   ]) present[k] = (await Bridge.secretPresent(k)) ?? false;
   return [integrationsSection(present)];
 }
@@ -1693,7 +1808,7 @@ const BASE_BODY: Record<string, () => Promise<Node[]> | Node[]> = {
 const BASE_KEYWORDS: Record<string, string[]> = {
   agents: ["hooks", "claude code", "plan usage", "status line", "relay", "codex", "cursor", "gemini", "permissions"],
   chat: ["api key", "model", "openai", "google", "openrouter", "free", "ollama", "lm studio", "local models", "providers", "cli", "claude code", "codex"],
-  integrations: ["stripe", "github", "vercel", "n8n", "resend", "notion", "cal.com", "token", "keys"],
+  integrations: ["stripe", "github", "vercel", "n8n", "resend", "notion", "cal.com", "linear", "token", "keys"],
   recap: ["weekly", "history"],
 };
 
@@ -1924,6 +2039,7 @@ async function main() {
 
   void onEvent<ShortcutsReport>("shortcuts-status", (fresh) => shortcutsListener?.report(fresh));
   void onEvent<Settings>("settings-changed", (s) => {
+    const mine = `${settings.soundEnabled}|${settings.soundVolume}|${settings.autoCloseInterval}`;
     const before = `${settings.chatProvider}|${settings.ollamaUrl}|${settings.lmstudioUrl}|${settings.customUrl}`;
     settings = { ...settings, ...s };
     shortcutsListener?.settingsChanged();
@@ -1931,6 +2047,8 @@ async function main() {
     const after = `${settings.chatProvider}|${settings.ollamaUrl}|${settings.lmstudioUrl}|${settings.customUrl}`;
     if (before !== after) localRedraw?.();
     applyLanguage();
+    // The island changed one of these: the open page shows the old value, redraw it.
+    if (mine !== `${settings.soundEnabled}|${settings.soundVolume}|${settings.autoCloseInterval}` && (current === "general" || current === "sounds")) void showPage();
   });
 }
 

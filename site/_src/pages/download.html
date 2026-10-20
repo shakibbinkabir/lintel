@@ -10,21 +10,20 @@
         <h2>Lintel for Windows</h2>
         <a class="btn btn-solid" data-latest="installer" href="{REPO}/releases/latest/download/lintel-setup.exe"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10.5l5 5 5-5M5 19.5h14"/></svg>Download for Windows</a>
         <dl class="facts">
-          <div><dt>Version</dt><dd data-latest="version">1.0.0</dd></div>
+          <div><dt>Version</dt><dd data-latest="version">2.0.0</dd></div>
           <div><dt>Size</dt><dd data-latest="size">39.8 MB</dd></div>
           <div><dt>Released</dt><dd data-latest="date">12 October 2026</dd></div>
           <div><dt>Needs</dt><dd>Windows 10 or 11</dd></div>
         </dl>
-        <p class="fine" style="margin-top:22px">The file is <code data-latest="file">lintel-1.0.0-setup.exe</code>, from the project's <a href="{REPO}/releases">releases page on GitHub</a>, where older versions are listed too. This card always shows the latest release: the page asks GitHub for it.</p>
-        <h3 style="margin-top:28px">Or with winget</h3>
-<pre><code>winget install lintel</code></pre>
-        <p class="fine">Lintel's package is in review at Microsoft. Until it is accepted, this command finds nothing: use the button above.</p>
+        <p class="fine" style="margin-top:22px">The file is <code data-latest="file">lintel-2.0.0-setup.exe</code>, from the project's <a href="{REPO}/releases">releases page on GitHub</a>, where older versions are listed too. This card always shows the latest release: the page asks GitHub for it.</p>
+        <h3 style="margin-top:28px">Coming to winget</h3>
+        <p class="fine">Lintel's package has been sent to winget and is waiting for Microsoft's moderators. Until it is accepted, use the button above.</p>
       </div>
     </div>
 
     <div class="prose">
       <h2>What Windows will ask</h2>
-      <p>Lintel is not code-signed yet. A signing certificate costs money every year, and this is a free project. So Windows does not know the file, and SmartScreen shows a blue warning: <strong>"Windows protected your PC"</strong>.</p>
+      <p>Lintel is not code-signed yet. So Windows does not know the file, and SmartScreen shows a blue warning: <strong>"Windows protected your PC"</strong>.</p>
       <ol class="steps">
         <li><strong>Open the file you downloaded.</strong>Your browser may also warn you. Choose Keep.</li>
         <li><strong>Click "More info".</strong>It is the small link in the blue window.</li>
@@ -50,14 +49,13 @@
     <p>Lintel never checks for updates by itself. In Settings, open Apps and click "Check for updates" when you want to look.</p>
 
     <h2 id="signing">Code signing policy</h2>
-    <p>The installer is not code-signed yet, which is why Windows warns. Lintel is applying to the SignPath Foundation's free code signing for open-source projects. Once it is granted, release installers will be signed on these terms:</p>
+    <p>Lintel's releases are not code-signed. The SignPath Foundation, which signs open-source projects for free, reviewed Lintel's application in October 2026 and declined it for now, because the project is still young: it looks for public signals such as stars, forks, contributors and outside mentions. Lintel may apply again later. A Microsoft Store version is being prepared; the Store signs the apps it distributes, so that version will be signed by Microsoft.</p>
     <ul>
-      <li><strong>Free code signing provided by <a href="https://signpath.io">SignPath.io</a>, certificate by <a href="https://signpath.org">SignPath Foundation</a>.</strong></li>
-      <li><strong>Built in the open.</strong> Every signed installer is built from the public repository by its build workflow on GitHub's own runners, never on a private machine.</li>
-      <li><strong>Committers and reviewers:</strong> <a href="{REPO}/graphs/contributors">the repository's contributors</a>. <strong>Approvers:</strong> <a href="https://github.com/shakibbinkabir">the repository's owner</a>.</li>
+      <li><strong>Built in the open.</strong> Every release is built on GitHub's own runner from the tagged source by the public release workflow, never on a private machine. Anyone can also build it from source.</li>
+      <li><strong>Check your download.</strong> The release page lists the SHA-256 of the installer.</li>
+      <li><strong>SmartScreen.</strong> It warns on an unsigned installer: choose "More info", then "Run anyway", if you trust the download.</li>
       <li><strong>Privacy policy.</strong> This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. The <a href="docs.html">documentation</a> lists what can leave your computer and what turns each thing on.</li>
     </ul>
-    <p>Until then, each release gives the SHA-256 of its installer, so you can check your download.</p>
 
     <h2>How to remove it</h2>
     <ol class="steps">

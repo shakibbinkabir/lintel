@@ -1,7 +1,7 @@
 // The island: DOM shell, sizing animation, mascot placement, pointer and keys,
 // and the API features use (docs/ARCHITECTURE.md §4, §5).
 
-import { Tracked, clamp, easeOut, scaleFrom } from "../core/anim";
+import { Tracked, easeOut, scaleFrom } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop, onEvent } from "../core/bridge";
 import type { IslandApi, IslandShape, ShapeAsk, VoiceFace } from "../core/feature";
 import {
@@ -17,6 +17,7 @@ import { pillDefinition, sessionOwner } from "../core/pills";
 import { onLanguageChange, tl } from "../i18n/i18n";
 import { BotEngine, hexToRGB, setDanceBeat, wipe } from "../mascot/engine";
 import { Greeting } from "../mascot/greeting";
+import { Mood } from "../mascot/mood";
 import { pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mascot/minibots";
 import { dotMark, iconBtn, setDotMark, tab } from "../ui/components";
 import { hideTip } from "../ui/tooltip";
@@ -114,6 +115,7 @@ export class Island {
   private botDot = dotMark("", "idle");
   private greetingCanvas!: HTMLCanvasElement;
   private countdown!: HTMLElement;
+  private cdDue: number | null = null;
   private wakeStrip!: HTMLElement;
   /** All of a text its card had to cut short, over the view; a click or Esc puts it away. */
   private reader = h("div", { id: "reader" });
@@ -173,6 +175,8 @@ export class Island {
   private openedAt = -1e9;
 
   private engine = new BotEngine();
+  /** Sleep after a quiet spell, and the PC's mood (src/mascot/mood.ts). */
+  private mood = new Mood(() => this.invalidate());
   private greeting = new Greeting();
   /** The mascot in the notification area, on the windows' taskbar buttons and on the shortcuts. */
   private tray = new TrayMascot(() => this.arbiter.notice != null);
@@ -342,7 +346,7 @@ export class Island {
         if (State.mode !== "hidden" || !featureOn("huds-power")) return go();
         void Bridge.featureCall<boolean>("huds-power", "fullscreen")
           .then((on) => {
-            if (typeof on === "boolean" && on !== this.arbiter.quiet) this.setFullscreen(on);
+            if (typeof on === "boolean" && on !== this.arbiter.quiet && !Sound.hushed) this.setFullscreen(on);
           })
           .catch(() => {})
           .then(go);
@@ -351,7 +355,7 @@ export class Island {
         this.activityRev++;
         this.invalidate();
       },
-      fullscreen: (on) => this.setFullscreen(on),
+      fullscreen: (on, call) => this.setFullscreen(on, call),
       hold: () => {
         const mine = this.holds.get(feature) ?? new Set();
         this.holds.set(feature, mine);
@@ -370,7 +374,7 @@ export class Island {
       },
       // A card that waits is never folded by a feature.
       close: () => {
-        if (State.mode === "expanded" && !State.pendingApproval) this.collapse();
+        if (State.mode === "expanded" && !State.pendingApproval && !State.isPinned) this.collapse();
       },
       // The voice assistant's three (island/voice.ts): nothing for any other feature, nothing while voice is off.
       ear: (on, heard) => {
@@ -451,8 +455,9 @@ export class Island {
   }
 
   /** A full-screen app came to the front or left (§4); a feature says so with `cx.island.fullscreen`. */
-  setFullscreen(on: boolean) {
+  setFullscreen(on: boolean, call = false) {
     this.arbiter.quiet = on;
+    Sound.hushed = call;
     if (on && State.mode !== "expanded" && !this.fsm.held) this.fsm.forceHidden();
     else this.arbiter.flush();
   }
@@ -593,6 +598,7 @@ export class Island {
           integration_stripe: "https://dashboard.stripe.com/payments",
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
+          integration_linear: "https://linear.app/inbox",
         };
         if (sessionOwner(familyOf(task)) || familyOf(task) === "integration_claude" || task.sessionId) {
           this.openSession(task);
@@ -1162,6 +1168,8 @@ export class Island {
     State.chatHistory = [];
     void Bridge.chatReset();
 
+    // Home first: opening a closed island shuts the sequence down.
+    this.setView("uploading");
     UploadSeq.performDrop(State.uploadDuration);
     this.uploadTens = 0;
     this.uploadDone = false;
@@ -1170,7 +1178,6 @@ export class Island {
     this.engine.triggerEmote("happy");
 
     State.uploadProgress = 0;
-    this.setView("uploading");
     this.ensureRunning();
 
     void Bridge.ingestFile(path)
@@ -1183,11 +1190,16 @@ export class Island {
       })
       .catch((err) => {
         if (State.droppedFile?.path !== path) return;
+        // Nothing was taken: the chat must not go on to send a file that never arrived.
+        State.droppedFile = null;
+        State.promptContext = null;
         UploadSeq.deactivate();
         State.noteMessage = String(err).replace(/^Error:\s*/, "");
         this.setView("note");
         Sound.play("error");
-        window.setTimeout(() => this.setView(State.defaultView()), 2400);
+        window.setTimeout(() => {
+          if (State.mode === "expanded" && State.view === "note") this.setView(State.defaultView());
+        }, 2400);
       });
   }
 
@@ -1443,6 +1455,7 @@ export class Island {
     void onEvent<number>("island-key", (code) => this.islandKey(code));
     void onEvent<{ playing: boolean; bpm: number; at: number }>("audio-extras:beat", (b) => {
       this.songPlays = b.playing;
+      if (b.playing) this.mood.poke();
       setDanceBeat(b.bpm, b.at);
     });
     void onEvent<null>("keyboard-lost", () => this.keyboardGone());
@@ -1598,6 +1611,7 @@ export class Island {
     // The state machine keeps its own idea of where the pointer is (the wake
     // strip tells it first, a reveal assumes it is away): this is the truth.
     this.wasInIsland = inIsland;
+    if (inIsland) this.mood.poke();
     this.syncFold();
     // The window lets the pointer through from here on: the page is not told that it left.
     if (!inIsland) hideTip();
@@ -1674,7 +1688,7 @@ export class Island {
     this.confusedRecovery = window.setTimeout(() => {
       this.confusedRecovery = null;
       State.stateOverride = null;
-      this.engine.setState(State.effectiveState);
+      this.engine.setState(this.mood.apply(State.effectiveState));
       if (State.view === "confused") {
         const fallback = State.defaultView();
         this.setView(this.prevViewBeforeConfused === "confused" ? fallback : this.prevViewBeforeConfused);
@@ -1788,7 +1802,7 @@ export class Island {
       settling || travelling ||
       this.botXc.animating || this.botCy.animating || this.botSize.animating ||
       greeting || UploadSeq.isActive || viewAnimating ||
-      this.fsm.openCollapseDueAt != null;
+      (this.fsm.openCollapseDueAt != null && this.cdDue !== this.fsm.openCollapseDueAt);
     // A strip the setting keeps out, with the pointer away and nothing moving,
     // rests (§4): idle means idle. A mascot that dances is something moving.
     this.setRest(this.fsm.kept && this.cursorKnown && !this.wasInIsland && !moving && !(mascot && this.botSeen && this.dances()));
@@ -1845,6 +1859,7 @@ export class Island {
       this.botDot.classList.toggle("arriving", arriving);
       this.botSeen = visible;
     }
+    this.mood.watch(visible && mascot);
     this.botCanvas.style.opacity = visible && mascot ? "1" : "0";
     this.botDot.style.opacity = visible && !mascot ? "1" : "0";
     if (!mascot) setDotMark(this.botDot, this.bodyColor() ?? "", this.worn.voice?.face ?? this.worn.held ?? State.effectiveState);
@@ -1936,15 +1951,20 @@ export class Island {
     // The state machine's own deadline, so the bar follows an auto-close delay
     // edited while the countdown runs.
     const dueAt = this.fsm.openCollapseDueAt;
-    // A bar scaled, not resized: nothing is laid out while it runs down.
-    let left = 0;
-    if (State.mode === "expanded" && !State.isPinned && dueAt != null) {
-      const windowS = Math.min(10, this.fsm.openToPeekDelay * 0.6);
-      const remaining = (dueAt - nowMs) / 1000;
-      if (remaining < windowS) left = clamp(remaining / windowS, 0, 1);
+    // A CSS animation armed once per deadline: it runs on the compositor, so
+    // the bar moves with a still mouse and costs the loop no frames.
+    const armed = State.mode === "expanded" && !State.isPinned && dueAt != null;
+    if (!armed) {
+      if (this.cdDue != null) { this.cdDue = null; this.countdown.style.animation = ""; }
+      return;
     }
-    const scale = `scaleX(${left.toFixed(4)})`;
-    if (this.countdown.style.transform !== scale) this.countdown.style.transform = scale;
+    if (this.cdDue === dueAt) return;
+    this.cdDue = dueAt;
+    const windowS = Math.min(10, this.fsm.openToPeekDelay * 0.6);
+    const remaining = (dueAt! - nowMs) / 1000;
+    this.countdown.style.animation = "none";
+    void this.countdown.offsetWidth;
+    this.countdown.style.animation = `island-cd ${windowS}s linear ${(remaining - windowS).toFixed(3)}s forwards`;
   }
 
   // ── DOM sync ────────────────────────────────────────────────────────────────
@@ -2080,7 +2100,8 @@ export class Island {
     }
 
     if (State.settings.showMascot) syncMiniBotStates(State.tasks);
-    this.engine.setState(State.effectiveState);
+    this.engine.setState(this.mood.apply(State.effectiveState));
+    this.botCanvas.title = this.mood.tip;
     if (this.voiceFace) this.wear();
     this.tray.sync();
   }

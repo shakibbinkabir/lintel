@@ -50,6 +50,8 @@ export interface AgentTask {
   family?: string;
   /** The tool the session used last ("Bash", "Edit"). */
   lastTool?: string | null;
+  /** The last shell command the session ran, for the code view. */
+  lastCommand?: string | null;
   /** What the agent says about itself, when it does: the session chips. */
   model?: string | null;
   mode?: string | null;
@@ -128,6 +130,8 @@ export interface Settings {
   levelPercent: boolean;
   /** The time and the day on the resting strip. */
   stripClock: boolean;
+  /** The agents count and the plan limits on the resting strip. */
+  stripStats: boolean;
   /** The section the island opens on when the strip shows nothing of its own (`<feature>.<id>`); empty: the home view. */
   openOn: string;
   /** A card under the pointer grows a little. */
@@ -149,6 +153,8 @@ export interface Settings {
   islandSpot: import("../island/place").Spot | null;
   autostart: boolean;
   hooksInstalled: boolean;
+  /** Another session's finish or error opens its card for a moment (off: a badge only). */
+  peekFinished: boolean;
   /** Claude model used by the chat. */
   model: string;
   /** Show the Claude plan pill (5 h and weekly limits) in the island's header. */
@@ -201,6 +207,7 @@ export const DEFAULT_SETTINGS: Settings = {
   keyJumps: true,
   levelPercent: true,
   stripClock: false,
+  stripStats: false,
   openOn: "",
   hoverEnlarge: false,
   homeCards: "both",
@@ -215,6 +222,7 @@ export const DEFAULT_SETTINGS: Settings = {
   islandSpot: null,
   autostart: false,
   hooksInstalled: false,
+  peekFinished: false,
   model: "claude-opus-5",
   showPlanInNotch: false,
   planRelayInstalled: false,

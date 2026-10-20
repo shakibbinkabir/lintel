@@ -63,15 +63,35 @@ export interface TurnEvent {
  */
 export type Verdict = "late" | "sub" | "open" | "background" | "finish" | "quiet" | "end" | "error";
 
+/**
+ * A slash command as the CLI echoes it (`<command-name>/compact</command-name>`,
+ * its arguments in `<command-args>`), as typed: `/compact`. Null for anything else.
+ * (After upstream pull request 735.)
+ */
+function slashCommand(prompt: string): string | null {
+  const tag = (name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(prompt)?.[1]?.trim() ?? "";
+  const name = tag("command-name");
+  if (!name) return null;
+  const args = tag("command-args");
+  return (name.startsWith("/") ? name : `/${name}`) + (args ? ` ${args}` : "");
+}
+
 /** Typed in the terminal and run by the CLI itself: it clears the conversation, no turn follows. */
 export function isClear(prompt: string | undefined): boolean {
-  return /^\/clear(\s|$)/.test((prompt ?? "").trim());
+  const p = (prompt ?? "").trim();
+  return /^\/clear(\s|$)/.test(slashCommand(p) ?? p);
 }
 
 /** A prompt the CLI wrote itself to wake the agent (a background task reported): the same turn goes on. */
 export function isInjected(prompt: string | undefined): boolean {
   const p = (prompt ?? "").trimStart();
   return p.startsWith("<task-notification") || p.startsWith("<system-reminder");
+}
+
+/** A prompt as the session's step line: a slash command as typed, never its raw tags; nothing for one the CLI wrote itself. */
+export function promptStep(prompt: string | undefined): string | null {
+  if (!prompt || isInjected(prompt)) return null;
+  return (slashCommand(prompt) ?? prompt).slice(0, 60) || null;
 }
 
 /** The main agent is at work again. Without prompts to count, that is the next turn. */

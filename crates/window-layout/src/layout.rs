@@ -29,7 +29,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, IsHungAppWindow,
     IsIconic, IsWindowVisible, IsZoomed, SetCursorPos, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, SET_WINDOW_POS_FLAGS,
-    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_SHOWNOACTIVATE, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_SHOWNOACTIVATE, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
@@ -72,14 +72,19 @@ pub fn close(a: RECT, b: RECT, by: i32) -> bool {
     (a.left - b.left).abs() <= by && (a.top - b.top).abs() <= by && (a.right - b.right).abs() <= by && (a.bottom - b.bottom).abs() <= by
 }
 
-/// The frame of a share. The screen gap pulls the work area in on every side
-/// (80 pixels of each axis always stay); the window gap is the whole distance
+/// The frame of a share. The screen gap, one per edge (left, top, right,
+/// bottom), pulls the work area in (80 pixels of each axis always stay); the window gap is the whole distance
 /// between two neighbours, so each gives up half of it on every edge it shares,
 /// which is every edge that is not on the screen's.
-pub fn tile_rect(share: Share, work: RECT, window_gap: i32, screen_gap: i32) -> RECT {
-    let dx = screen_gap.min((width(work) - 80) / 2).max(0);
-    let dy = screen_gap.min((height(work) - 80) / 2).max(0);
-    let (left, top, w, h) = (work.left + dx, work.top + dy, width(work) - 2 * dx, height(work) - 2 * dy);
+pub fn tile_rect(share: Share, work: RECT, window_gap: i32, screen_gap: [i32; 4]) -> RECT {
+    // Two gaps on one axis share the room that is left, in proportion.
+    let pair = |a: i32, b: i32, len: i32| {
+        let (a, b, room) = (a.max(0), b.max(0), (len - 80).max(0));
+        if a + b <= room { (a, b) } else { (room * a / (a + b), room * b / (a + b)) }
+    };
+    let (dl, dr) = pair(screen_gap[0], screen_gap[2], width(work));
+    let (dt, db) = pair(screen_gap[1], screen_gap[3], height(work));
+    let (left, top, w, h) = (work.left + dl, work.top + dt, width(work) - dl - dr, height(work) - dt - db);
     let half = window_gap / 2;
     let inner = |at: i32| if at > 0 && at < 12 { half } else { 0 };
     RECT {
@@ -353,7 +358,7 @@ pub fn target(skip_own: bool) -> Option<isize> {
 
 /// Moves the window so that what is seen of it is `to`. False when Windows
 /// refuses (a window that runs as administrator).
-fn set_visible(hwnd: isize, to: RECT, resize: bool) -> bool {
+pub fn set_visible(hwnd: isize, to: RECT, resize: bool) -> bool {
     let (mut outer, seen) = (RECT::default(), visible(hwnd));
     unsafe {
         if GetWindowRect(handle(hwnd), &mut outer).is_err() {
@@ -406,6 +411,16 @@ fn maximize(hwnd: isize, work: RECT) -> bool {
     }
 }
 
+/// Keeps the window above the others (or lets it go back), and says whether it did.
+pub fn set_topmost(hwnd: isize, on: bool) -> bool {
+    let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    unsafe { SetWindowPos(handle(hwnd), Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE).is_ok() }
+}
+
+pub fn is_topmost(hwnd: isize) -> bool {
+    (unsafe { GetWindowLongW(handle(hwnd), GWL_EXSTYLE) } as u32) & WS_EX_TOPMOST.0 != 0
+}
+
 // ── Placements, and the way back ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -414,6 +429,8 @@ pub struct Options {
     pub window_gap: i32,
     /// Between a window and the edge of the screen, in pixels at 100 %.
     pub screen_gap: i32,
+    /// Left, top, right and bottom edge of its own, in place of `screen_gap`.
+    pub edge_gaps: [Option<i32>; 4],
     /// Almost maximise leaves this share of the screen free on every side, in percent.
     pub margin: i32,
     /// A repeated Left or Right changes the width instead of the display.
@@ -422,14 +439,14 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Self { window_gap: 0, screen_gap: 0, margin: 5, cycle: true }
+        Self { window_gap: 0, screen_gap: 0, edge_gaps: [None; 4], margin: 5, cycle: true }
     }
 }
 
 impl Options {
     pub fn tile(&self, share: Share, on: &Display) -> RECT {
         let px = |v: i32| v * on.dpi as i32 / 96;
-        tile_rect(share, on.work, px(self.window_gap), px(self.screen_gap))
+        tile_rect(share, on.work, px(self.window_gap), self.edge_gaps.map(|g| px(g.unwrap_or(self.screen_gap))))
     }
 
     /// The share a frame sits on, if it sits on one.
@@ -458,6 +475,8 @@ fn same(a: Frame, b: Frame) -> bool {
 #[derive(Default)]
 pub struct Layout {
     history: Mutex<HashMap<(isize, u32), Vec<Frame>>>,
+    /// Where a placement left a window, and the size it had before the first one.
+    placed: Mutex<HashMap<(isize, u32), (RECT, (i32, i32))>>,
 }
 
 impl Layout {
@@ -466,6 +485,16 @@ impl Layout {
     /// "next-display", "previous-display" or "restore". Says how it went:
     /// "done", "restored", "no-window", "nothing-to-restore", "one-display" or
     /// "failed".
+    /// The size a window had before Lintel tiled it, when it still sits where the
+    /// tiling left it (once: a second call says None until it is tiled again).
+    pub fn unsnap(&self, hwnd: isize) -> Option<(i32, i32)> {
+        let mut placed = self.placed.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (hwnd, pid_of(hwnd));
+        let (at, size) = *placed.get(&key)?;
+        placed.remove(&key);
+        (close(at, visible(hwnd), TOLERANCE) && !unsafe { IsZoomed(handle(hwnd)).as_bool() }).then_some(size)
+    }
+
     pub fn apply(&self, hwnd: isize, action: &str, o: &Options) -> &'static str {
         let mut history = self.history.lock().unwrap_or_else(|e| e.into_inner());
         // Closed windows are forgotten here, on an action, never on a timer.
@@ -551,6 +580,19 @@ impl Layout {
             }
         };
 
+        // Remember where a tiling left it, and the size it had before the first one.
+        // Centre, display moves and maximising are not placements to come back from.
+        let tiled = dir.is_some() || TILES.iter().any(|t| t.0 == action);
+        {
+            let mut placed = self.placed.lock().unwrap_or_else(|e| e.into_inner());
+            let after = frame(hwnd);
+            if there && tiled && !before.zoomed && !after.zoomed {
+                let old = placed.get(&key).filter(|p| close(p.0, before.rect, TOLERANCE)).map(|p| p.1);
+                placed.insert(key, (after.rect, old.unwrap_or((width(before.rect), height(before.rect)))));
+            } else {
+                placed.remove(&key);
+            }
+        }
         if !same(frame(hwnd), before) {
             let frames = history.entry(key).or_default();
             frames.push(before);

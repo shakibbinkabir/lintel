@@ -23,7 +23,7 @@ static MANIFEST: Manifest = Manifest {
     uses: &[Use::Network],
     shortcuts: &[ShortcutDef { id: "add-reminder", label: "Add a reminder", default: None }],
     tray: &[],
-    defaults: r#"{ "countdown": true, "calcom": true, "lead": 60, "alarm": 0 }"#,
+    defaults: r#"{ "countdown": true, "calcom": true, "description": true, "lead": 60, "alarm": 0 }"#,
 };
 
 const COLORS: [&str; 6] = ["#8ea2ff", "#34d399", "#f5a524", "#f4505e", "#22d3ee", "#c9956a"];
@@ -65,6 +65,15 @@ pub struct Calendar {
     inner: Mutex<Option<Arc<Inner>>>,
 }
 
+/// The running calendar, for `agenda_today`.
+static LIVE: Mutex<Option<Arc<Inner>>> = Mutex::new(None);
+
+/// Today's agenda as text, or None while the calendar feature is off. Only the chat
+/// asks, and only when the user switched "Today's agenda" on.
+pub fn agenda_today() -> Option<String> {
+    LIVE.lock().ok()?.clone()?.agenda()
+}
+
 fn now_s() -> i64 {
     Timestamp::now().as_second()
 }
@@ -99,7 +108,7 @@ impl Inner {
                 }
                 for o in e.expand(&local, from, to) {
                     out.push(json!({
-                        "title": o.title, "location": o.location, "link": o.link, "start": o.start * 1000, "end": o.end * 1000,
+                        "title": o.title, "location": o.location, "description": o.description, "link": o.link, "start": o.start * 1000, "end": o.end * 1000,
                         "allDay": o.all_day, "cal": c.name, "color": c.color, "unsupported": o.unsupported,
                     }));
                 }
@@ -138,6 +147,27 @@ impl Inner {
             })
             .collect();
         json!({ "cards": cards })
+    }
+
+    /// Today's events, one per line, for the chat when the user allows it.
+    fn agenda(&self) -> Option<String> {
+        let tz = TimeZone::system();
+        let start = Zoned::now().with_time_zone(tz.clone()).start_of_day().ok()?;
+        let end = start.checked_add(jiff::Span::new().days(1)).ok()?;
+        let found = self.events(start.timestamp().as_second(), end.timestamp().as_second());
+        let mut list: Vec<&Value> = found["events"].as_array()?.iter().collect();
+        list.sort_by_key(|e| e["start"].as_i64().unwrap_or(0));
+        let hm = |ms: i64| Timestamp::from_millisecond(ms).map(|t| t.to_zoned(tz.clone()).strftime("%H:%M").to_string()).unwrap_or_default();
+        let lines: Vec<String> = list
+            .iter()
+            .take(30)
+            .map(|e| {
+                let when = if e["allDay"] == true { "All day".to_string() } else { format!("{}-{}", hm(e["start"].as_i64().unwrap_or(0)), hm(e["end"].as_i64().unwrap_or(0))) };
+                let place = e["location"].as_str().filter(|l| !l.is_empty()).map(|l| format!(" ({})", l.chars().take(80).collect::<String>())).unwrap_or_default();
+                format!("{when} {}{place}", e["title"].as_str().unwrap_or("").chars().take(120).collect::<String>())
+            })
+            .collect();
+        Some(if lines.is_empty() { "No events today.".to_string() } else { lines.join("\n") })
     }
 
     fn state(&self) -> Value {
@@ -265,11 +295,13 @@ impl Feature for Calendar {
                 tauri::async_runtime::block_on(refresh(t.clone(), None));
             }
         });
+        *LIVE.lock().unwrap() = Some(inner.clone());
         *slot = Some(inner);
         Ok(())
     }
 
     fn stop(&self, _cx: &Ctx) {
+        *LIVE.lock().unwrap() = None;
         if let Some(i) = self.inner.lock().unwrap().take() {
             *i.stop.lock().unwrap() = true;
             i.wake.notify_all();

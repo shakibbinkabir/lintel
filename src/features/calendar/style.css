@@ -20,6 +20,8 @@
 .f-calendar-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .f-calendar-name b { font: 400 var(--t-md) var(--font); font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .f-calendar-name small { font: 400 var(--t-xs) var(--font); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f-calendar-name small.f-calendar-desc { white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; cursor: pointer; }
+.f-calendar-name small.f-calendar-desc.open { display: block; -webkit-line-clamp: unset; }
 .f-calendar-name small.warn { color: var(--warn); }
 .f-calendar-name small.bad { color: var(--bad); }
 .f-calendar-tag { flex: none; padding: 1px 6px; border-radius: var(--r-pill); background: var(--card-2); font: 400 var(--t-xs) var(--font); color: var(--ink-2); }

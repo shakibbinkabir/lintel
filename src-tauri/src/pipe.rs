@@ -14,7 +14,8 @@
 //   * whatever happens we drop the connection after the decision timeout, and
 //     the terminal takes over.
 //
-// What we write back is the bare word `allow` or `deny` — or, when the request
+// What we write back is the bare word `allow` or `deny` (or a plan card's
+// `plan_auto`, `plan_manual`, `plan_change`) — or, when the request
 // was Claude Code asking a question, `{"answers":{…}}` with what was picked on
 // the island. Turning either into the documented hookSpecificOutput JSON is
 // lintel-hook's job, so the wire format Claude Code expects lives in exactly
@@ -27,7 +28,9 @@
 // running as the same user stay inside the trust boundary, as before.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Mutex;
+use std::task::Poll;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -92,6 +95,8 @@ pub fn start(app: AppHandle) {
         return;
     }
     *slot = Some(tauri::async_runtime::spawn(serve(app)));
+    // The tunnels of the SSH hosts listed in Settings, if any.
+    crate::remote::start();
 }
 
 /// Stops serving. Whoever still waits for an answer gets none, and their agent
@@ -100,6 +105,7 @@ pub fn stop(app: &AppHandle) {
     if let Some(task) = SERVER.lock().unwrap().take() {
         task.abort();
     }
+    crate::remote::stop();
     app.state::<Pending>().0.lock().unwrap().clear();
 }
 
@@ -229,7 +235,22 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         return;
     }
 
-    note_session_window(&pipe, &payload, &event);
+    // A session on an SSH host (remote.rs) has no window here: our own relay ran for it.
+    if payload.get("lintel_remote").is_some() {
+        crate::remote::note(&payload, &event);
+    } else {
+        note_session_window(&pipe, &payload, &event);
+    // Claude Code's own one-line summary of the session, from its terminal's title.
+    if event != "StatusLine" {
+        note_window_title(&mut payload);
+    }
+    }
+    // A finished turn stays quiet when its terminal is the window in front.
+    if event == "Stop"
+        && payload.get("session_id").and_then(Value::as_str).and_then(session_window::lookup).is_some_and(|owners| crate::platform::in_front_of(&owners))
+    {
+        payload["lintel_front"] = json!(true);
+    }
     // Counts for the weekly recap — never the command, path or prompt itself.
     crate::recap::observe(&app, &payload);
 
@@ -259,7 +280,25 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
     log::line(format!("hook PermissionRequest id={}", short(&id)));
     let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
 
-    let decision = wait_for_decision(&id, &mut rx).await;
+    // Answered in the terminal instead: Claude Code ends the relay (or the shell
+    // it ran in, and the relay follows), its end of the pipe closes, and the
+    // card goes at once rather than offering a question already settled.
+    // (After upstream pull request 740.)
+    let decision = {
+        let mut decided = std::pin::pin!(wait_for_decision(&id, &mut rx));
+        let mut hung_up = std::pin::pin!(client_gone(&mut pipe));
+        std::future::poll_fn(|cx| match decided.as_mut().poll(cx) {
+            Poll::Ready(d) => Poll::Ready(Ok(d)),
+            Poll::Pending => hung_up.as_mut().poll(cx).map(Err),
+        })
+        .await
+    };
+    let decision = decision.unwrap_or_else(|()| {
+        log::line(format!("hook id={} answered elsewhere, the relay hung up", short(&id)));
+        crate::recap::forget_request(&app, &id);
+        let _ = app.emit_to(WINDOW_LABEL, "hook-resolved", &id);
+        None
+    });
     app.state::<Pending>().0.lock().unwrap().remove(&id);
 
     // No decision: say nothing at all. lintel-hook then writes nothing to stdout
@@ -269,6 +308,13 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         let _ = pipe.flush().await;
     }
     pipe.finish();
+}
+
+/// Resolves once the relay has gone (end of stream or a broken pipe). It sends
+/// nothing after its one line, so whatever a read brings is skipped.
+async fn client_gone(pipe: &mut (impl AsyncRead + Unpin)) {
+    let mut probe = [0u8; 64];
+    while matches!(pipe.read(&mut probe).await, Ok(n) if n > 0) {}
 }
 
 /// The client's first line without its newline, or everything it sent before
@@ -303,9 +349,10 @@ async fn read_request(pipe: &mut (impl AsyncRead + Unpin), limit: Duration) -> O
 /// Finds, once per session, the window it runs in — see session_window.rs.
 ///
 /// Only while the session is unknown, so the process snapshot is not taken on
-/// every event. The relay must still be running for its parents to be found:
-/// a permission request always is (it waits for us), a quick event may already
-/// have exited, and then a later event of the session tries again.
+/// every event. The relay lists the processes it runs under (`lintel_ancestors`):
+/// it has usually exited by now, only a permission request waits for us. An
+/// older relay, or another program, is walked up from by its PID instead,
+/// which only works while it still runs; else a later event tries again.
 fn note_session_window(pipe: &impl Relay, payload: &Value, event: &str) {
     let Some(session) = payload.get("session_id").and_then(Value::as_str) else { return };
     if event == "SessionEnd" {
@@ -315,12 +362,35 @@ fn note_session_window(pipe: &impl Relay, payload: &Value, event: &str) {
     if session_window::known(session) {
         return;
     }
-    let Some(relay) = pipe.client_pid() else { return };
-    let ancestors = crate::platform::process_ancestors(relay);
+    let listed: Vec<u32> = payload
+        .get("lintel_ancestors")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_u64).filter_map(|p| u32::try_from(p).ok()).collect())
+        .unwrap_or_default();
+    let ancestors = if listed.is_empty() {
+        let Some(relay) = pipe.client_pid() else { return };
+        crate::platform::process_ancestors(relay)
+    } else {
+        crate::platform::below_tree_tops(&listed)
+    };
     // No ancestors: the relay was already gone, so try again next time. Some,
     // but none with a window (a classic console): settled, VS Code it is.
     if !ancestors.is_empty() {
         session_window::remember(session, crate::platform::window_owners(&ancestors));
+    }
+}
+
+/// The title of the terminal window a Claude Code session runs in, for the island to name the
+/// pill with. Only for a session whose window was found: one window listing per event.
+fn note_window_title(payload: &mut Value) {
+    let agent = payload.get("lintel_agent").and_then(Value::as_str).unwrap_or_default();
+    if !agent.is_empty() && !agent.starts_with("claude-") {
+        return;
+    }
+    let Some(owners) = payload.get("session_id").and_then(Value::as_str).and_then(session_window::lookup) else { return };
+    let folder = payload.get("cwd").and_then(Value::as_str).map(session_window::folder_name).unwrap_or_default().to_string();
+    if let Some(title) = crate::platform::session_window_title(&owners, &folder) {
+        payload["lintel_window_title"] = json!(title);
     }
 }
 
@@ -408,6 +478,8 @@ pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
     let always = notch_feat_chat_plus::take_always(request_id);
     let word = match decision {
         "allow" | "always" => if always { "always" } else { "allow" },
+        // The plan card's (Claude Code's ExitPlanMode): the relay sends them only for a plan.
+        "plan_auto" | "plan_manual" | "plan_change" => decision,
         _ => "deny",
     };
     log::line(format!("decision id={} {word}", short(request_id)));
@@ -458,6 +530,18 @@ mod tests {
             drop(client);
             let line = read_request(&mut server, Duration::from_secs(1)).await;
             assert_eq!(line.as_deref(), Some(&b"{\"a\":1}"[..]));
+        });
+    }
+
+    #[test]
+    fn a_relay_that_hangs_up_is_seen_at_once_and_a_waiting_one_is_not() {
+        block_on(async {
+            let (mut ours, theirs) = tokio::io::duplex(64);
+            let waiting = tokio::time::timeout(Duration::from_millis(50), client_gone(&mut ours)).await;
+            assert!(waiting.is_err(), "a live relay must not count as gone");
+            drop(theirs);
+            let gone = tokio::time::timeout(Duration::from_millis(50), client_gone(&mut ours)).await;
+            assert!(gone.is_ok(), "a closed relay must be seen at once");
         });
     }
 

@@ -38,6 +38,20 @@ let watching = false;
 const views = new Map<string, (progressOnly: boolean) => void>();
 const redraw = (progressOnly = false) => views.forEach((draw) => draw(progressOnly));
 
+// A newer Lintel the island announced: the Apps section shows it with Update now, What's new and Later.
+interface SelfCheck { latest?: string; newer?: boolean; page?: string; notes?: string; error?: string; canInstall?: boolean; announce?: boolean; off?: boolean }
+let offer: SelfCheck | null = null;
+let offerError = "";
+let drawOffer = () => {};
+
+/** Update now: Rust downloads, checks and runs the installer, then quits; only an error comes back. */
+function updateNow(cx: FeatureCtx, r: SelfCheck) {
+  offerError = "";
+  if (r.canInstall) void cx.call("selfUpdate");
+  else void Bridge.openUrl(r.page ?? "");
+  drawOffer();
+}
+
 /** Follows the feature's state from now on; the returned function stops it. */
 function watch(cx: FeatureCtx): () => void {
   if (watching) return () => {};
@@ -287,20 +301,23 @@ function notesView(cx: FeatureCtx) {
   const check: HTMLButtonElement = btn(cx.t("Check for updates"), "secondary", async () => {
     check.disabled = true;
     result.replaceChildren(cx.t("Checking…"));
-    const r = await cx.call<{ latest?: string; newer?: boolean; page?: string; notes?: string; error?: string }>("selfCheck");
+    const r = await cx.call<SelfCheck>("selfCheck");
     check.disabled = false;
     if (!r || r.error) return result.replaceChildren(cx.t("Could not check: {error}", { error: r?.error ?? "" }));
     if (!r.newer) return result.replaceChildren(cx.t("You have the latest version."));
     result.replaceChildren(
       h("span", { text: cx.t("Version {version} is out.", { version: r.latest ?? "" }) }),
-      small(btn(cx.t("Open the release page"), "primary", () => void Bridge.openUrl(r.page ?? ""))),
+      small(btn(cx.t(r.canInstall ? "Update now" : "Open the release page"), "primary", () => {
+        updateNow(cx, r);
+        if (r.canInstall) result.append(h("p", { class: `${P}hint`, text: cx.t("Downloading. Lintel closes when the installer starts.") }));
+      })),
       r.notes ? h("pre", { class: `${P}cmd`, text: r.notes }) : "",
     );
   });
   const draw = () =>
     head.replaceChildren(
       card([
-        row(`${BRAND.name} ${live?.version ?? ""}`, check, cx.t("Looks for a newer release. Nothing is downloaded: a newer version opens as its page in your browser.")),
+        row(`${BRAND.name} ${live?.version ?? ""}`, check, cx.t("Looks for a newer release. Update now downloads the installer from GitHub, checks it against GitHub's checksum and runs it after your click.")),
         result,
       ]),
     );
@@ -385,7 +402,21 @@ function section(cx: FeatureCtx): SectionHost {
     if (!progressOnly) updates.draw();
   };
   views.set("section", draw);
-  return { el: h("div", { class: `${P}page` }, the.el, updates.el), show: () => draw(), hide() {}, sync() {} };
+  const news = h("div", { class: `${P}news` });
+  drawOffer = () => {
+    const o = offer;
+    news.hidden = !o;
+    if (!o) return;
+    news.replaceChildren(card([
+      row(cx.t("Version {version} is out.", { version: o.latest ?? "" }), h("span", {},
+        small(btn(cx.t("Update now"), "primary", () => updateNow(cx, o))),
+        small(btn(cx.t("Later"), "secondary", () => { offer = null; drawOffer(); })))),
+      o.notes ? h("pre", { class: `${P}cmd`, text: o.notes }) : "",
+      offerError ? h("p", { class: `${P}hint`, text: offerError }) : "",
+    ]));
+  };
+  drawOffer();
+  return { el: h("div", { class: `${P}page` }, news, the.el, updates.el), show: () => { draw(); drawOffer(); }, hide() {}, sync() {} };
 }
 
 export default defineFeature({
@@ -410,6 +441,8 @@ export default defineFeature({
             cx.t("A check asks winget, which reads its sources over the network.")),
           row(cx.t("Tell me what a check found"), toggle(s.notify !== false, set("notify")), cx.t("Only for the checks that run by themselves, and once per update.")),
           row(cx.t("Include Microsoft Store apps"), toggle(s.store !== false, set("store"))),
+          row(cx.t("Get new versions from the island"), toggle(s.selfCheck === true, (on) => void cx.settings.patch({ selfCheck: on, selfAsked: true })),
+            cx.t("Asks GitHub for the list of releases a few times a day. A new version only opens the island once a day, and nothing is installed without your click.")),
         ]),
         h("div", { class: "section-title", text: cx.t("Hidden updates") }),
         card(
@@ -480,9 +513,49 @@ export default defineFeature({
         tone: "info",
         section: "apps",
       }));
+    // A newer Lintel: asked once, then checked a few times a day; announced at most once a day.
+    const check = async () => {
+      const s = await cx.settings.get();
+      if (s.selfCheck !== true) return;
+      const r = await cx.call<SelfCheck>("selfCheck", { auto: true });
+      if (!r?.announce) return;
+      offer = r;
+      offerError = "";
+      cx.island.notice({
+        kind: "notification",
+        title: cx.t("Version {version} is out.", { version: r.latest ?? "" }),
+        detail: cx.t("Update now, or see what is new."),
+        icon: "download",
+        tone: "info",
+        section: "apps",
+        action: { label: cx.t("Update now"), run: () => updateNow(cx, r) },
+      });
+    };
+    const ask = async () => {
+      const s = await cx.settings.get();
+      if (s.selfAsked === true || s.selfCheck != null) return;
+      await cx.settings.patch({ selfAsked: true });
+      cx.island.notice({
+        kind: "notification",
+        title: cx.t("Get new versions from the island?"),
+        detail: cx.t("Lintel would ask GitHub for its releases a few times a day."),
+        icon: "download",
+        tone: "info",
+        action: { label: cx.t("Yes"), run: () => void cx.settings.patch({ selfCheck: true }).then(check) },
+      });
+    };
+    const offSelf = cx.on<{ error?: string }>("selfUpdate", (e) => {
+      offerError = e.error ?? "";
+      drawOffer();
+    });
+    const first = window.setTimeout(() => void ask().then(check), 45_000);
+    const every = window.setInterval(() => void check(), 6 * 3600_000);
     return () => {
       off();
       offFound();
+      offSelf();
+      clearTimeout(first);
+      clearInterval(every);
     };
   },
 });

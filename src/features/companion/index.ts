@@ -47,10 +47,13 @@ const opts = (v: Record<string, unknown>): Opts => ({
 
 function mountCompanion(root: HTMLElement, cx: FeatureCtx) {
   root.className = `${P}stage`;
-  const dpr = window.devicePixelRatio || 1;
   const canvas = h("canvas", { class: `${P}canvas` }) as HTMLCanvasElement;
-  canvas.width = Math.round(SIZE * dpr);
-  canvas.height = Math.round(SIZE * dpr);
+  const fit = () => {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(SIZE * dpr);
+    canvas.height = Math.round(SIZE * dpr);
+  };
+  fit();
   root.append(canvas);
   const ctx = canvas.getContext("2d")!;
 
@@ -82,6 +85,8 @@ function mountCompanion(root: HTMLElement, cx: FeatureCtx) {
   };
 
   const draw = () => {
+    // A display with another scale: the backing store follows it.
+    if (canvas.width !== Math.round(SIZE * (window.devicePixelRatio || 1))) fit();
     wipe(ctx);
     ctx.setTransform(canvas.width / SIZE, 0, 0, canvas.height / SIZE, 0, 0);
     engine.draw(ctx, CX, CY, D);

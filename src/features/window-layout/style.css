@@ -10,6 +10,9 @@
 }
 .f-window-layout-said { flex: none; color: var(--dim); font: 400 var(--t-sm) var(--font); text-align: center; }
 
+/* The strip of virtual desktops. */
+.f-window-layout-desks { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--s-2); flex: 1; align-content: center; }
+
 /* ── Settings ─────────────────────────────────────────────────────────── */
 
 .f-window-layout-settings > .card + .card { margin-top: var(--s-2); }

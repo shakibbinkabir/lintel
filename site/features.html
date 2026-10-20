@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Features: everything Lintel can do | Lintel</title>
-<meta name="description" content="The whole feature list of Lintel 1.0.0, group by group: coding agents, chat, media, system tools, capture, clipboard, voice and more. Each one has a switch.">
+<meta name="description" content="The whole feature list of Lintel 2.0.0, group by group: coding agents (also in WSL and over SSH), chat, media, window layout, capture, cleaner, voice and more. Each one has a switch.">
 <link rel="canonical" href="https://lintel.thisissbk.com/features">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Lintel">
 <meta property="og:url" content="https://lintel.thisissbk.com/features">
 <meta property="og:title" content="Features: everything Lintel can do">
-<meta property="og:description" content="The whole feature list of Lintel 1.0.0, group by group: coding agents, chat, media, system tools, capture, clipboard, voice and more. Each one has a switch.">
+<meta property="og:description" content="The whole feature list of Lintel 2.0.0, group by group: coding agents (also in WSL and over SSH), chat, media, window layout, capture, cleaner, voice and more. Each one has a switch.">
 <meta property="og:image" content="https://lintel.thisissbk.com/img/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -47,7 +47,7 @@
 <main id="main" tabindex="-1">
 <div class="page-head wrap">
   <h1 class="rise">Every feature, in plain words.</h1>
-  <p class="lede rise">Lintel 1.0.0 has 38 features in eleven groups, the same groups you see in its settings. Each one has a switch.</p>
+  <p class="lede rise">Lintel 2.0.0 has 38 features in eleven groups, the same groups you see in its settings. Each one has a switch.</p>
 </div>
 
 <section class="wrap">
@@ -55,14 +55,14 @@
     <span><span class="tag off">Off by default</span>You turn it on in Settings, under Features.</span>
     <span><span class="tag">Needs</span>Something extra: a download, a key of your own, or a permission.</span>
   </div>
-  <p class="note" style="margin-bottom:44px"><strong>This is the first release.</strong> The island, the agents, chat, media, the shelf, timers and the clipboard have been used the most. Some of the system tools have been tried less. <a href="https://github.com/shakibbinkabir/lintel/blob/main/docs/FEATURES.md">FEATURES.md</a> says how far each one is built, and the <a href="https://github.com/shakibbinkabir/lintel/blob/main/docs/ROADMAP.md">roadmap</a> lists what is left open.</p>
+  <p class="note" style="margin-bottom:44px"><strong>Version 2.0.0 is a large release,</strong> with about ninety additions and fixes. New options start off until you turn them on. The island, the agents, chat, media, the shelf, timers and the clipboard have been used the most. Some of the system tools, and the newest additions, have been tried less. <a href="https://github.com/shakibbinkabir/lintel/blob/main/docs/FEATURES.md">FEATURES.md</a> says how far each one is built, and the <a href="https://github.com/shakibbinkabir/lintel/blob/main/docs/ROADMAP.md">roadmap</a> lists what is left open.</p>
 
   <div class="fgroup" id="agents">
     <h2>Agents <small>Your AI coding agents, on the island.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Coding agents</h3><p>See what each agent session is doing. When an agent asks for permission, a card slides out with Allow and Deny. Answer its questions, see what it changed, and jump to its terminal. It works with Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot CLI, OpenCode, Amp, Hermes, Antigravity and the Claude desktop app. The hooks for Cursor, Antigravity and Hermes have not been confirmed on a real install yet.</p></div>
-      <div class="feat"><h3>Agent usage</h3><p>Tokens used by Claude Code and Codex, today and this week, with an estimated value and your plan limits. Read from the logs on your PC. Only numbers are read, never your text.</p></div>
-      <div class="feat"><h3>Integrations</h3><p>Small status pills for GitHub, Vercel, Stripe, Notion, Resend, Cal.com and n8n.</p><span class="tag">Needs your own key for each service</span></div>
+      <div class="feat"><h3>Coding agents</h3><p>See what each agent session is doing. When an agent asks for permission, a card slides out with Allow and Deny. Answer its questions, see what it changed, and jump to its terminal. It works with Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot CLI, OpenCode, Amp, Hermes, Antigravity, Kiro CLI, JetBrains terminals and the Claude desktop app. A plan from Claude Code arrives as a card with Auto mode, Manual or Change plan. Claude Code inside WSL and on SSH hosts works too, with the same Allow and Deny. Sessions that are already running show up when Lintel starts, and a small code view shows the lines a session just changed. The hooks for Cursor, Antigravity and Hermes have not been confirmed on a real install yet.</p></div>
+      <div class="feat"><h3>Agent usage</h3><p>Tokens used by Claude Code (one card for each profile), Codex and OpenCode, today and this week, with an estimated value, your plan limits and a weekly pace line. Read from the logs on your PC. Only numbers are read, never your text.</p></div>
+      <div class="feat"><h3>Integrations</h3><p>Small status pills for GitHub (with your session’s git push and the CI of its branch), GitLab, Gitea, Vercel, Stripe, Notion, Resend, Cal.com, n8n and a Linear inbox. The Linear pill has not been tried against a real account yet.</p><span class="tag">Needs your own key for each service</span></div>
       <div class="feat"><h3>Weekly recap</h3><p>A weekly summary of your agents’ work, kept on this computer.</p></div>
     </div>
   </div>
@@ -70,7 +70,7 @@
   <div class="fgroup" id="chat">
     <h2>Chat <small>Ask a model without opening a browser.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Chat</h3><p>Ask a question from the island. Use your own key (Anthropic, OpenAI, Google or OpenRouter), a model on your PC through Ollama or LM Studio, or a command-line agent you already have.</p><span class="tag">Needs a key or a local model</span></div>
+      <div class="feat"><h3>Chat</h3><p>Ask a question from the island. Use your own key (Anthropic, OpenAI, Google or OpenRouter), a model on your PC through Ollama or LM Studio, or a command-line agent you already have. It draws formulas as math, takes dropped files as code cards, can read today’s agenda, and can use the tools of MCP servers you already set up in other apps (each call asks first).</p><span class="tag">Needs a key or a local model</span></div>
       <div class="feat"><h3>Chat plus</h3><p>Extras for chat: attach a window as context, and send a file by email. An email is only sent when you click Send.</p></div>
     </div>
   </div>
@@ -78,8 +78,8 @@
   <div class="fgroup" id="media">
     <h2>Media <small>Music and sound.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Now playing</h3><p>The song that is playing, with its cover, a seek bar and controls. It works with any player Windows knows about. A short notice shows when the track changes.</p></div>
-      <div class="feat"><h3>Audio mixer</h3><p>Volume and mute for each app, a picker for the sound output, a shortcut to switch outputs, and one key that mutes every microphone.</p></div>
+      <div class="feat"><h3>Now playing</h3><p>The song that is playing, with its cover, a seek bar and controls. It works with any player Windows knows about, and when several browser tabs play media you can switch between them one by one. A short notice shows when the track changes.</p></div>
+      <div class="feat"><h3>Audio mixer</h3><p>Volume and mute for each app, a picker for the sound output, a shortcut to switch outputs, and one key that mutes every microphone. The mouse wheel moves a fader.</p></div>
       <div class="feat"><h3>Audio extras</h3><p>Music bars, the mascot moving to the beat, and finer volume steps.</p><span class="tag off">Off by default</span></div>
     </div>
   </div>
@@ -87,10 +87,10 @@
   <div class="fgroup" id="island">
     <h2>Island <small>Tabs that live on the island itself.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Calendar</h3><p>Your next meeting with a countdown, a week view, and a simple list of reminders.</p><span class="tag">Needs a calendar link (.ics) from you</span></div>
+      <div class="feat"><h3>Calendar</h3><p>Your next meeting with a countdown, a week view, notes on an event, and a simple list of reminders.</p><span class="tag">Needs a calendar link (.ics) from you</span></div>
       <div class="feat"><h3>Controls</h3><p>Sliders for volume and brightness, quick switches (dark mode, hidden files, desktop icons, lock, display off, Recycle Bin), and a notes pad with tabs that saves itself.</p></div>
-      <div class="feat"><h3>Timer</h3><p>A timer, a Pomodoro and a stopwatch that stay in view on the island.</p></div>
-      <div class="feat"><h3>Notifications and accessories</h3><p>A notice when a Bluetooth device connects, with its battery level. Mirroring Windows notifications is not in this version.</p></div>
+      <div class="feat"><h3>Timer</h3><p>A timer, a Pomodoro and a stopwatch that stay in view on the island, and a timer that puts the PC to sleep or shuts it down (shutting down always asks first).</p></div>
+      <div class="feat"><h3>Notifications and accessories</h3><p>A notice when a Bluetooth device connects, with its battery level, for every accessory. It can also show the notifications of other apps (WhatsApp, Telegram, Teams, Mail and more) as they pop up. Nothing leaves your PC, and it needs no signing.</p><span class="tag off">Notifications from other apps are off by default</span></div>
       <div class="feat"><h3>Island extras</h3><p>A camera mirror, quick access tiles for programs, folders and links, and website shortcuts. The camera starts only when you open the mirror.</p><span class="tag off">Off by default</span></div>
     </div>
   </div>
@@ -99,7 +99,7 @@
     <h2>System <small>What your PC is doing.</small></h2>
     <div class="feats">
       <div class="feat"><h3>Levels and battery</h3><p>Volume, brightness, microphone and battery notices on the island. It also keeps the island away while a full-screen app is in front.</p></div>
-      <div class="feat"><h3>Displays and keep awake</h3><p>A brightness slider for each display, extra dimming, a wallpaper picker, and keeping the PC awake for a set time.</p></div>
+      <div class="feat"><h3>Displays and keep awake</h3><p>A brightness slider for each display, extra dimming, a wallpaper picker, keeping the PC awake for a set time or while your agents work, and brightness keys that move every display.</p></div>
       <div class="feat"><h3>System monitor</h3><p>Processor, graphics, memory, disk and network, with a list of processes and open ports. A speed test runs only when you click it.</p></div>
       <div class="feat"><h3>Hardware sensors</h3><p>Temperatures, fans and drive health, read by a small helper program. Fan control is a beta.</p><span class="tag off">Off by default</span><span class="tag">Needs one administrator prompt and the PawnIO driver</span></div>
     </div>
@@ -108,8 +108,8 @@
   <div class="fgroup" id="capture">
     <h2>Capture <small>Pictures and videos of your screen.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Capture</h3><p>Screenshots of an area, a window or the whole screen. Pick a colour, read a QR code, copy text from the screen, or pin a capture on top of your windows.</p></div>
-      <div class="feat"><h3>Editor</h3><p>Annotate a capture, add a background or a watermark, capture a long scrolling page, or draw on the screen.</p></div>
+      <div class="feat"><h3>Capture</h3><p>Screenshots of an area, a window or the whole screen. Pick a colour, read a QR code, copy text from the screen, or pin a capture on top of your windows, then zoom it or drag it out.</p></div>
+      <div class="feat"><h3>Editor</h3><p>Annotate a capture with arrows (also curved), filled shapes, a spotlight, a magnifier and a ruler. Add a background, extra space or a watermark, paste in other pictures, capture a long scrolling page, or draw on the screen.</p></div>
       <div class="feat"><h3>Screen recorder</h3><p>Record the screen, a window or an area as an MP4 file. Editing a recording afterwards is not in this version.</p></div>
     </div>
   </div>
@@ -117,7 +117,7 @@
   <div class="fgroup" id="files">
     <h2>Files <small>Somewhere to put things for a moment.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Shelf</h3><p>Park files, text and links on the island, then drag them out again later. Share, zip or rename them from there.</p></div>
+      <div class="feat"><h3>Shelf</h3><p>Park files, text and links on the island, then drag them out again later. Share, zip or rename them from there. The island folds away when you drag an item out.</p></div>
       <div class="feat"><h3>File drop</h3><p>Drop a file on the island to ask a model about it or to send it on by email.</p></div>
     </div>
   </div>
@@ -126,16 +126,16 @@
     <h2>Tools <small>Everyday helpers.</small></h2>
     <div class="feats">
       <div class="feat"><h3>Clipboard</h3><p>A history of what you copied (text, links, pictures, files) with search and pins. Paste as plain text. Remove tracking parts from a copied link. Passwords and private copies are left out.</p></div>
-      <div class="feat"><h3>Cleaner</h3><p>Find caches, logs and leftovers that can go. You review the list, and they move to the Recycle Bin. Uninstall a program and see what it left behind.</p></div>
+      <div class="feat"><h3>Cleaner</h3><p>Find caches, logs and leftovers that can go, see where your disk space went on a map, and find duplicate files. You review the list, and only what you tick moves to the Recycle Bin. Uninstall a program and see what it left behind.</p></div>
       <div class="feat"><h3>Lyrics</h3><p>The line being sung, under the song. The feature is on, but it looks nothing up until you turn on the lookup from LRCLIB.</p><span class="tag">Needs you to turn on the lookup</span></div>
-      <div class="feat"><h3>Tools and setup</h3><p>The welcome page, backup and reset of your settings, a demo mode, and a keyboard lock for cleaning your keys.</p></div>
+      <div class="feat"><h3>Tools and setup</h3><p>The welcome page, backup and reset of your settings, a demo mode, a keyboard lock for cleaning your keys, and a watchdog that restarts Lintel after a crash (never after you quit).</p></div>
       <div class="feat"><h3>Voice</h3><p>A voice assistant. Press a key and say “set a timer for 12 minutes” or “what are my agents doing”. Speech is understood on your PC. English only. It never approves, sends or deletes anything.</p><span class="tag off">Off by default</span><span class="tag">Needs a download (from 19 MB)</span></div>
       <div class="feat"><h3>Dictation</h3><p>Speak instead of typing. Speech becomes text on this computer.</p><span class="tag off">Off by default</span><span class="tag">Needs a download (about 19 MB)</span></div>
-      <div class="feat"><h3>Command bar</h3><p>One bar to find and run apps, windows, files, settings and actions, with a calculator and unit conversions.</p><span class="tag off">Off by default</span></div>
+      <div class="feat"><h3>Command bar</h3><p>One bar to find and run apps, windows, files, settings and actions, with a calculator and unit conversions. It can also show a small bar beside text you select in any app: copy, clean a link, change case, or keep it on the shelf.</p><span class="tag off">Off by default</span></div>
       <div class="feat"><h3>Breaks and screen time</h3><p>Reminders to rest your eyes and stretch, and how long you have used the screen.</p><span class="tag off">Off by default</span></div>
-      <div class="feat"><h3>Radial menu</h3><p>A wheel of actions at the pointer, opened with a shortcut.</p><span class="tag off">Off by default</span></div>
+      <div class="feat"><h3>Radial menu</h3><p>A wheel of actions at the pointer, opened with a shortcut. A slice can run a command of your own.</p><span class="tag off">Off by default</span></div>
       <div class="feat"><h3>Media tools</h3><p>Compress a video, make a GIF, convert and resize pictures, and read the text in a picture.</p><span class="tag off">Off by default</span></div>
-      <div class="feat"><h3>Companion</h3><p>The mascot on your desktop, with outfits and small reactions.</p><span class="tag off">Off by default</span></div>
+      <div class="feat"><h3>Companion</h3><p>The mascot on your desktop, with outfits and small reactions. It falls asleep when things are quiet, and reacts to a busy, hot or tired PC.</p><span class="tag off">Off by default</span></div>
       <div class="feat"><h3>Weather</h3><p>The forecast for a city you choose, from Open-Meteo.</p><span class="tag off">Off by default</span></div>
     </div>
   </div>
@@ -143,29 +143,27 @@
   <div class="fgroup" id="apps">
     <h2>Apps <small>Keeping programs up to date.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Apps</h3><p>See which of your apps have updates, and install or update packages through winget. Lintel checks for its own updates here too, only when you click.</p></div>
+      <div class="feat"><h3>Apps</h3><p>See which of your apps have updates, and install or update packages through winget. Lintel can also update itself: after you agree once, it checks GitHub for new versions. Update now downloads the installer from GitHub, checks it against GitHub’s SHA-256 and installs it. Nothing is installed without your click.</p></div>
     </div>
   </div>
 
   <div class="fgroup" id="input">
     <h2>Input <small>Keyboard and mouse.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Input tools</h3><p>Text snippets that expand as you type, filters for keys and clicks that fire twice, shortcuts on mouse buttons, and rules for scrolling.</p><span class="tag off">Off by default</span></div>
+      <div class="feat"><h3>Input tools</h3><p>Text snippets that expand as you type, filters for keys and clicks that fire twice, shortcuts on mouse buttons, and rules for scrolling, with a separate direction for the touchpad.</p><span class="tag off">Off by default</span></div>
     </div>
   </div>
 
   <div class="fgroup" id="windows">
     <h2>Windows <small>Arranging what is open.</small></h2>
     <div class="feats">
-      <div class="feat"><h3>Window layout</h3><p>Snap the window in front to halves, thirds and quarters with shortcuts, move it to another display, and put it back.</p><span class="tag off">Off by default</span></div>
+      <div class="feat"><h3>Window layout</h3><p>Snap the window in front to halves, thirds and quarters with shortcuts, with a gap for each edge, move it to another display, and put it back. Pin any window on top of the others. Drag a window from anywhere with a modifier key, snap it to edges and zones, and see your named virtual desktops in a strip.</p><span class="tag off">Off by default</span></div>
     </div>
   </div>
 
   <div class="fgroup" id="not-yet">
     <h2>Not in this version <small>Said plainly, so you do not look for them.</small></h2>
     <ul class="plain">
-      <li>Mirroring the notifications of other apps. Windows allows it only to a signed and packaged app.</li>
-      <li>A replacement for the Alt+Tab switcher. It was considered and dropped.</li>
       <li>An editor for recordings. It was considered and dropped too.</li>
       <li>The island on more than one display at a time.</li>
       <li>A light theme. Lintel is dark only.</li>

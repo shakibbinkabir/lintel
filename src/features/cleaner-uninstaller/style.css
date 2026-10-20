@@ -74,3 +74,7 @@
 
 /* Settings: the kinds of file, as chips that are on or off. */
 .f-cleaner-uninstaller-kinds { display: flex; flex-wrap: wrap; gap: var(--s-1); padding: var(--s-2) 0; border-top: 1px solid var(--hairline); }
+
+/* The disk chart: a canvas that takes the room the page has. */
+.f-cleaner-uninstaller-sun { flex: 1; min-height: 0; width: 100%; cursor: pointer; }
+.f-cleaner-uninstaller-head > .field { flex: 1; min-width: 0; }

@@ -1068,17 +1068,44 @@
       "ru": "winget перестал отвечать и был закрыт.",
       "id": "winget berhenti merespons dan ditutup."
     },
-    "The update feed could not be read.": {
-      "en": "The update feed could not be read.",
-      "zh-Hans": "无法读取更新源。",
-      "hi": "अपडेट फ़ीड पढ़ी नहीं जा सकी।",
-      "es": "No se pudo leer el canal de actualizaciones.",
-      "ar": "تعذّرت قراءة موجز التحديثات.",
-      "fr": "Le flux des mises à jour n’a pas pu être lu.",
-      "bn": "আপডেট ফিড পড়া যায়নি।",
-      "pt-BR": "Não foi possível ler o feed de atualizações.",
-      "ru": "Не удалось прочитать ленту обновлений.",
-      "id": "Umpan pembaruan tidak dapat dibaca."
+    "Update now": {
+      "en": "Update now"
+    },
+    "Later": {
+      "en": "Later"
+    },
+    "Update now, or see what is new.": {
+      "en": "Update now, or see what is new."
+    },
+    "Get new versions from the island": {
+      "en": "Get new versions from the island"
+    },
+    "Get new versions from the island?": {
+      "en": "Get new versions from the island?"
+    },
+    "Lintel would ask GitHub for its releases a few times a day.": {
+      "en": "Lintel would ask GitHub for its releases a few times a day."
+    },
+    "Asks GitHub for the list of releases a few times a day. A new version only opens the island once a day, and nothing is installed without your click.": {
+      "en": "Asks GitHub for the list of releases a few times a day. A new version only opens the island once a day, and nothing is installed without your click."
+    },
+    "Downloading. Lintel closes when the installer starts.": {
+      "en": "Downloading. Lintel closes when the installer starts."
+    },
+    "Looks for a newer release. Update now downloads the installer from GitHub, checks it against GitHub's checksum and runs it after your click.": {
+      "en": "Looks for a newer release. Update now downloads the installer from GitHub, checks it against GitHub's checksum and runs it after your click."
+    },
+    "Yes": {
+      "en": "Yes"
+    },
+    "The release list could not be read.": {
+      "en": "The release list could not be read."
+    },
+    "Check for a new version first.": {
+      "en": "Check for a new version first."
+    },
+    "The download does not match GitHub's checksum. Nothing was run.": {
+      "en": "The download does not match GitHub's checksum. Nothing was run."
     }
   }
 }

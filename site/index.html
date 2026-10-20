@@ -25,7 +25,7 @@
 <script>document.documentElement.classList.add("js")</script>
 <script defer src="js/site.js"></script>
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Lintel","url":"https://lintel.thisissbk.com/","description":"A free, open-source island at the top of your Windows screen: answer your coding agents, control music and reach your tools, then it gets out of the way.","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"1.0.0","license":"https://www.gnu.org/licenses/gpl-3.0.html","downloadUrl":"https://github.com/shakibbinkabir/lintel/releases/download/v1.0.0/lintel-1.0.0-setup.exe","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakib Bin Kabir","url":"https://github.com/shakibbinkabir"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Lintel","url":"https://lintel.thisissbk.com/","description":"A free, open-source island at the top of your Windows screen: answer your coding agents, control music and reach your tools, then it gets out of the way.","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"2.0.0","license":"https://www.gnu.org/licenses/gpl-3.0.html","downloadUrl":"https://github.com/shakibbinkabir/lintel/releases/download/v2.0.0/lintel-2.0.0-setup.exe","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakib Bin Kabir","url":"https://github.com/shakibbinkabir"}}
 </script>
 </head>
 <body>
@@ -110,7 +110,7 @@
     <p>Lintel is built around four things: efficiency, optimisation, privacy and necessity.</p>
   </div>
   <dl class="figures">
-    <div class="reveal" style="--i:0"><dt>0.5<small>%</small></dt><dd><b>It rests when you rest.</b>About half a percent of one processor core while it waits, hidden and idle, in the audit of this release. The core is Rust, with a light web view for the interface.</dd></div>
+    <div class="reveal" style="--i:0"><dt>0.5<small>%</small></dt><dd><b>It rests when you rest.</b>About half a percent of one processor core while it waits, hidden and idle, in the audit of version 1.0.0. The core is Rust, with a light web view for the interface.</dd></div>
     <div class="reveal" style="--i:1"><dt>6<small>px</small></dt><dd><b>It stays out of your way.</b>A strip six pixels tall is all that waits at the top of your screen. Point at it and the island slides out. Look away and it leaves.</dd></div>
     <div class="reveal" style="--i:0"><dt>0</dt><dd><b>Your data stays yours.</b>On a fresh install Lintel calls no server at all. No account, no telemetry. Your keys are kept in Windows Credential Manager, and nothing is approved, sent or deleted without your click.</dd></div>
     <div class="reveal" style="--i:1"><dt>38</dt><dd><b>Carry only what you need.</b>Every feature has its own switch. One that is off loads nothing: no hooks, no timers, no threads, no windows.</dd></div>
@@ -150,17 +150,17 @@
     <p>Everything is a glance away, and each tool can be switched off.</p>
   </div>
   <div class="index reveal">
-    <div><h3>Agents</h3><p>Sessions, permission cards and questions from your coding agents, with usage and a weekly recap.</p></div>
-    <div><h3>Chat</h3><p>Ask a model from the island, with your own key or a model on your PC.</p></div>
-    <div><h3>Media</h3><p>The song that is playing, and the volume of each app.</p></div>
-    <div><h3>Island</h3><p>Calendar, reminders, timers, notes and quick controls, one tab each.</p></div>
+    <div><h3>Agents</h3><p>Sessions, permission cards, plans and questions from your coding agents, on Windows, in WSL and over SSH, with usage and a weekly recap.</p></div>
+    <div><h3>Chat</h3><p>Ask a model from the island, with your own key or a model on your PC, and let it use your MCP tools.</p></div>
+    <div><h3>Media</h3><p>The song that is playing, even across browser tabs, and the volume of each app.</p></div>
+    <div><h3>Island</h3><p>Calendar, reminders, timers, notes and quick controls, one tab each, and notifications from your other apps.</p></div>
     <div><h3>System</h3><p>Volume and brightness levels, battery, displays, keep awake and a system monitor.</p></div>
-    <div><h3>Capture</h3><p>Screenshots, an editor, scrolling capture and screen recording.</p></div>
+    <div><h3>Capture</h3><p>Screenshots, a richer editor, scrolling capture and screen recording.</p></div>
     <div><h3>Files</h3><p>A shelf to park files, and a drop on the island to hand a file on.</p></div>
-    <div><h3>Tools</h3><p>Clipboard history, a cleaner, a command bar, dictation and a voice assistant.</p></div>
-    <div><h3>Apps</h3><p>Updates and installs for your apps, through winget.</p></div>
+    <div><h3>Tools</h3><p>Clipboard history, a cleaner with a disk map, a command bar, dictation and a voice assistant.</p></div>
+    <div><h3>Apps</h3><p>Updates and installs for your apps, through winget. Lintel can update itself from the island, when you agree.</p></div>
     <div><h3>Input</h3><p>Text snippets, and rules for keys, mouse buttons and scrolling.</p></div>
-    <div><h3>Windows</h3><p>Snap windows to halves, thirds and quarters with shortcuts.</p></div>
+    <div><h3>Windows</h3><p>Snap windows to halves, thirds and quarters, pin one on top, and move them by dragging.</p></div>
     <div><h3><a class="more" href="features">The whole list <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></a></h3><p>All 38 features in plain words, with what is off by default.</p></div>
   </div>
 </section>
@@ -179,7 +179,7 @@
 <section class="cta wrap" aria-labelledby="cta-h">
   <svg class="bot reveal" viewBox="0 0 58 58" aria-hidden="true"><use href="#bot"/></svg>
   <h2 id="cta-h" class="reveal">Free, and yours to change.</h2>
-  <p class="reveal">Version 1.0.0 for Windows 10 and 11. It installs for your account, without administrator rights.</p>
+  <p class="reveal">Version <span data-latest="version">2.0.0</span> for Windows 10 and 11 (<code data-latest="file">lintel-2.0.0-setup.exe</code>). It installs for your account, without administrator rights.</p>
   <div class="row reveal"><a class="btn btn-solid" href="download">Download for Windows</a></div>
 </section>
 </main>

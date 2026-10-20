@@ -87,6 +87,7 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     { class: "f-editor-crop", hidden: true },
     cropSize,
     h("button", { class: "btn sm ghost", text: t("Whole picture"), onclick: () => setPending(whole()) }),
+    h("button", { class: "btn sm ghost", text: t("Add space"), onclick: () => addSpace() }),
     h("button", { class: "btn sm ghost", text: t("Cancel"), onclick: () => setTool("select") }),
     h("button", { class: "btn sm primary", onclick: () => applyCrop() }, h("span", { text: t("Crop") }), h("span", { class: "kbd", text: "Enter" })),
   );
@@ -107,7 +108,7 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     h("button", { class: "close", title: t("Close"), "aria-label": t("Close"), onclick: () => void cx.call("close", { label }), text: "×" }),
   );
 
-  const rail = toolRail(t, ["select", null, "arrow", "line", "rect", "ellipse", null, "pen", "highlight", "text", null, "blur", "crop", null, "eraser"], setTool);
+  const rail = toolRail(t, ["select", null, "arrow", "curve", "line", "ruler", "rect", "ellipse", null, "pen", "highlight", "text", null, "blur", "spot", "magnify", "crop", null, "eraser"], setTool);
   const colorRow = swatches(t, (i) => {
     board.color = colors[i];
     board.restyle({ color: colors[i] });
@@ -120,6 +121,7 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     sizeRow.show(size);
     void cx.settings.patch({ size });
   });
+  const fillBtn = h("button", { class: "tab icon f-editor-tool", title: t("Fill the shapes"), "aria-label": t("Fill the shapes"), onclick: () => setFill(!board.fill) }, icon(ICONS.fill, 16));
   const small = (el: HTMLElement) => (el.classList.add("sm"), el);
   const backdropBtn = h("button", { class: "btn sm ghost", onclick: () => toggle(backdropBtn, backdropPanel) }, icon(ICONS.backdrop, 14), h("span", { text: t("Backdrop") }));
   const stampBtn = h("button", { class: "btn sm ghost", onclick: () => toggle(stampBtn, stampPanel) }, icon(ICONS.watermark, 14), h("span", { text: t("Watermark") }));
@@ -133,6 +135,7 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     colorRow.el,
     sep(),
     ...sizeRow.els,
+    fillBtn,
     sep(),
     backdropBtn,
     stampBtn,
@@ -152,11 +155,17 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
   // ── What is drawn ───────────────────────────────────────────────────────────
 
   const whole = (): Box => ({ x: 0, y: 0, w: image?.width ?? 1, h: image?.height ?? 1 });
+  /** The picture and the crop, which may reach beyond it (space added around): what the crop tool works on. */
+  function area(): Box {
+    const [a, c] = [whole(), board.crop ?? whole()];
+    const [x, y] = [Math.min(a.x, c.x), Math.min(a.y, c.y)];
+    return { x, y, w: Math.max(a.x + a.w, c.x + c.w) - x, h: Math.max(a.y + a.h, c.y + c.h) - y };
+  }
 
   /** The output as it is on screen; `final` is as it leaves (no crop being chosen). */
   function out(final = false): Out {
     const choosing = !final && !!pending;
-    const crop = choosing ? whole() : (board.crop ?? whole());
+    const crop = choosing ? area() : (board.crop ?? whole());
     const short = Math.min(crop.w, crop.h);
     const on = backdrop.kind !== "none" && !choosing;
     // Even no padding keeps a frame, and a small picture keeps a visible one.
@@ -246,12 +255,12 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
       c.translate(o.pad - o.crop.x, o.pad - o.crop.y);
       board.outline(c, zoom);
       if (pending) {
-        const all = whole();
+        const all = area();
         c.save();
         c.globalAlpha = 0.6;
         c.fillStyle = token("--bg");
         c.beginPath();
-        c.rect(0, 0, all.w, all.h);
+        c.rect(all.x, all.y, all.w, all.h);
         c.rect(pending.x, pending.y, pending.w, pending.h);
         c.fill("evenodd");
         c.restore();
@@ -356,6 +365,22 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     paint();
   }
 
+  /** Grows the picture's frame on every side; the new space is see-through. debt: no choice of fill colour. */
+  function addSpace() {
+    const c = board.crop ?? whole();
+    const n = Math.max(32, Math.round(Math.min(c.w, c.h) * 0.1));
+    const next = { x: c.x - n, y: c.y - n, w: c.w + n * 2, h: c.h + n * 2 };
+    board.set(board.marks, next);
+    setPending(next);
+  }
+
+  function setFill(on: boolean) {
+    board.fill = on;
+    board.restyle({ fill: on });
+    fillBtn.classList.toggle("on", on);
+    void cx.settings.patch({ fill: on });
+  }
+
   function applyCrop() {
     if (!pending) return;
     const all = whole();
@@ -388,7 +413,10 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
   }
   /** How near a mark a click counts as on it: six pixels of the display. */
   const reach = () => 6 / zoom;
-  const inside = (x: number, y: number): [number, number] => [clamp(Math.round(x), 0, whole().w), clamp(Math.round(y), 0, whole().h)];
+  const inside = (x: number, y: number): [number, number] => {
+    const a = area();
+    return [clamp(Math.round(x), a.x, a.x + a.w), clamp(Math.round(y), a.y, a.y + a.h)];
+  };
 
   let pan: { x: number; y: number; ox: number; oy: number } | null = null;
   let cropFrom: [number, number] | null = null;
@@ -449,6 +477,24 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     },
     { passive: false },
   );
+
+  // Ctrl+V with a picture on the clipboard: a layer in the middle of the frame, to move and size by its marks.
+  window.addEventListener("paste", (e) => {
+    const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
+    if (!file || !image || typing || (e.target as HTMLElement).closest?.("input, textarea")) return;
+    e.preventDefault();
+    void createImageBitmap(file).then((img) => {
+      const c = board.crop ?? whole();
+      const k = Math.min(1, (c.w * 0.6) / img.width, (c.h * 0.6) / img.height);
+      const [w, h] = [Math.max(1, Math.round(img.width * k)), Math.max(1, Math.round(img.height * k))];
+      const [x, y] = [Math.round(c.x + (c.w - w) / 2), Math.round(c.y + (c.h - h) / 2)];
+      const marks = [...board.marks, { tool: "image" as const, color: "", size: 1, pts: [x, y, x + w, y + h], img }];
+      board.set(marks);
+      setTool("select");
+      board.selected = marks.length - 1;
+      paint();
+    });
+  });
 
   // ── Keys ────────────────────────────────────────────────────────────────────
 
@@ -623,6 +669,8 @@ export function mountEditor(root: HTMLElement, cx: FeatureCtx) {
     [board.color, board.size] = [colors[color], Number(settings.size) || 4];
     colorRow.show(color);
     sizeRow.show(board.size);
+    board.fill = settings.fill === true;
+    fillBtn.classList.toggle("on", board.fill);
     backdropBtn.classList.toggle("on", backdrop.kind !== "none");
     stampBtn.classList.toggle("on", stamp.kind !== "none");
     try {

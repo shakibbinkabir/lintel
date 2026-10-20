@@ -36,7 +36,7 @@ interface Battery extends Power {
   health: number | null;
 }
 
-const DEFAULTS = { volume: true, mic: true, brightness: true, battery: true, restOnBattery: false, fullscreen: true, micUse: true, chargeLimit: 0 };
+const DEFAULTS = { volume: true, mic: true, brightness: true, battery: true, restOnBattery: false, fullscreen: true, micUse: true, quietMic: false, quietCamera: false, chargeLimit: 0 };
 type Options = typeof DEFAULTS;
 
 /** At or below this charge, off the charger, the battery is low. */
@@ -60,6 +60,10 @@ let micMute: boolean | null = null;
 let fullscreen = false;
 /** The apps with the microphone open now (never Lintel's own dictation). */
 let micApps: string[] = [];
+/** The apps with the camera open now. */
+let camApps: string[] = [];
+/** The island was told to keep quiet because the microphone or the camera is in use. */
+let calling = false;
 /** The strip drew the microphone row (its `render` ran): the row owns the strip, no notice is needed. */
 let micDrawn = false;
 let micTimer = 0;
@@ -164,10 +168,20 @@ function onPower(cx: FeatureCtx, now: Power) {
   post(cx, { kind: "battery", title, detail: percent(cx, now.percent), mark: glyph(now), section: "battery" });
 }
 
-function onMicUse(cx: FeatureCtx, apps: string[]) {
+/** The microphone or camera is in use and its switch is on: no sounds, no reveals, notices wait. */
+function syncQuiet(cx: FeatureCtx) {
+  const call = (opts.quietMic && micApps.length > 0) || (opts.quietCamera && camApps.length > 0);
+  if (call === calling) return;
+  calling = call;
+  cx.island.fullscreen(fullscreen || call, call);
+}
+
+function onMicUse(cx: FeatureCtx, apps: string[], camera: string[] = []) {
+  camApps = camera;
   const fresh = apps.find((a) => !micApps.includes(a));
   const was = micApps.length;
   micApps = apps;
+  syncQuiet(cx);
   // A new app on the strip comes out; a change of names only redraws the row.
   if (was === 0 || apps.length === 0) cx.island.activityChanged("mic-use");
   else cx.island.redraw("mic-use");
@@ -192,7 +206,7 @@ function onChargeLimit(cx: FeatureCtx, pct: number) {
 function setFullscreen(cx: FeatureCtx, on: boolean) {
   if (on === fullscreen) return;
   fullscreen = on;
-  cx.island.fullscreen(on);
+  cx.island.fullscreen(on || calling, calling);
   if (micApps.length > 0) cx.island.activityChanged("mic-use");
   const waiting = held;
   held = null;
@@ -276,7 +290,7 @@ function settingsPage(cx: FeatureCtx): HTMLElement {
   const el = h("div", { class: "f-huds-power-settings" });
   void cx.settings.get().then((stored) => {
     const now = { ...DEFAULTS, ...stored } as Options;
-    const item = (key: "volume" | "mic" | "brightness" | "battery" | "restOnBattery" | "fullscreen" | "micUse", label: string, hint: string) =>
+    const item = (key: "volume" | "mic" | "brightness" | "battery" | "restOnBattery" | "fullscreen" | "micUse" | "quietMic" | "quietCamera", label: string, hint: string) =>
       row(cx.t(label), toggle(now[key], (on) => void cx.settings.patch({ [key]: on })), cx.t(hint));
     el.append(
       h("div", { class: "section-title", text: cx.t("Notices") }),
@@ -289,6 +303,8 @@ function settingsPage(cx: FeatureCtx): HTMLElement {
       h("div", { class: "section-title", text: cx.t("Privacy and charging") }),
       card([
         item("micUse", "Microphone in use", "A pulsing dot and the app's name while an app has the microphone open. Dictation here is not announced."),
+        item("quietMic", "Quiet while the microphone is in use", "No sounds, no sliding out and notices wait while an app has the microphone open (a call). An app that holds it all day keeps the island quiet all day."),
+        item("quietCamera", "Quiet while the camera is in use", "The same while an app has the camera open."),
         row(cx.t("Charge limit reminder"), limitSelect(cx, now.chargeLimit), cx.t("One notice per charging session when the battery reaches this level on the charger.")),
       ]),
       h("div", { class: "section-title", text: cx.t("Island") }),
@@ -363,6 +379,7 @@ export default defineFeature({
       opts = { ...DEFAULTS, ...stored } as Options;
       if (opts.restOnBattery !== rested) cx.island.activityChanged("battery");
       if (opts.micUse !== micWas) cx.island.activityChanged("mic-use");
+      syncQuiet(cx);
     };
     void cx.settings.get().then(applyOptions);
     const offs = [
@@ -374,15 +391,15 @@ export default defineFeature({
         const title = cx.t((displays ?? 1) > 1 ? "Built-in display" : "Brightness");
         if (opts.brightness) post(cx, { kind: "brightness", title, level, icon: "sun" });
       }),
-      cx.on<{ apps: string[] }>("micUse", ({ apps }) => onMicUse(cx, apps)),
+      cx.on<{ apps: string[]; camera?: string[] }>("micUse", ({ apps, camera }) => onMicUse(cx, apps, camera)),
       cx.on<{ percent: number }>("chargeLimit", ({ percent: pct }) => onChargeLimit(cx, pct)),
       cx.on<Power>("power", (p) => onPower(cx, p)),
       cx.on<{ on: boolean }>("fullscreen", ({ on }) => setFullscreen(cx, on)),
     ];
     // Events only tell of changes: this is where we start from.
-    void cx.call<{ power: Power; micMute: boolean | null; fullscreen: boolean; micApps: string[] | null }>("state").then((s) => {
+    void cx.call<{ power: Power; micMute: boolean | null; fullscreen: boolean; micApps: string[] | null; cameraApps?: string[] | null }>("state").then((s) => {
       if (!s) return;
-      if (s.micApps && !micApps.length) onMicUse(cx, s.micApps);
+      if (s.micApps && !micApps.length) onMicUse(cx, s.micApps, s.cameraApps ?? []);
       micMute ??= s.micMute;
       if (!power) onPower(cx, s.power);
       setFullscreen(cx, s.fullscreen);
@@ -394,6 +411,9 @@ export default defineFeature({
       window.clearTimeout(micTimer);
       held = null;
       setFullscreen(cx, false);
+      if (calling) cx.island.fullscreen(false, false);
+      calling = false;
+      camApps = [];
       power = null;
       micMute = null;
       micApps = [];

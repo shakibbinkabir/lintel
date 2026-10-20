@@ -149,6 +149,14 @@ impl Feature for MediaTools {
                     Ok(json!({ "path": out.to_string_lossy(), "from": p.metadata().map(|m| m.len()).unwrap_or(0), "to": out.metadata().map(|m| m.len()).unwrap_or(0) }))
                 })
             }
+            "audio" => {
+                let p = path_arg(&args)?;
+                let trim = (num(&args, "start", 0.0), num(&args, "end", 0.0));
+                self.spawn(cx, "audio", move |cancel, progress| {
+                    let out = video::audio(&p, trim, cancel, progress)?;
+                    Ok(json!({ "path": out.to_string_lossy(), "from": p.metadata().map(|m| m.len()).unwrap_or(0), "to": out.metadata().map(|m| m.len()).unwrap_or(0) }))
+                })
+            }
             "gif" => {
                 let p = path_arg(&args)?;
                 let o = gif::Opts {

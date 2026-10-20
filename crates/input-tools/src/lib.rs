@@ -40,7 +40,7 @@ static MANIFEST: Manifest = Manifest {
     // snippetList: { id, name, trigger, text, mode: "delimiter" | "immediate", on, ignoreCase, folder, library }.
     // remapList: { from, to, on }, combinations as keys.rs names them ("" for nothing).
     // keyDebounceKeys: "E:40, Space:25". Lists of apps are program names (notepad.exe).
-    defaults: r#"{ "snippets": false, "snippetList": [], "keyDebounce": false, "keyDebounceMs": 5, "keyDebounceKeys": "", "clickDebounce": false, "clickDebounceMs": 25, "pointerAccelOff": false, "invertVertical": false, "invertHorizontal": false, "sideways": false, "sidewaysKey": "Shift", "scrollExceptions": [], "buttons": false, "buttonBack": "", "buttonForward": "", "wheelLeft": "", "wheelRight": "", "buttonExceptions": [], "remaps": false, "remapList": [], "guard": false, "guardApps": [], "guardKeys": [] }"#,
+    defaults: r#"{ "snippets": false, "snippetList": [], "keyDebounce": false, "keyDebounceMs": 5, "keyDebounceKeys": "", "clickDebounce": false, "clickDebounceMs": 25, "pointerAccelOff": false, "invertVertical": false, "invertHorizontal": false, "padVertical": false, "padHorizontal": false, "sideways": false, "sidewaysKey": "Shift", "scrollExceptions": [], "buttons": false, "buttonBack": "", "buttonForward": "", "wheelLeft": "", "wheelRight": "", "buttonExceptions": [], "remaps": false, "remapList": [], "guard": false, "guardApps": [], "guardKeys": [] }"#,
 };
 
 // ── Settings into configuration ───────────────────────────────────────────────
@@ -94,6 +94,8 @@ fn config(s: &Value) -> Config {
         click_ms: ms("clickDebounceMs", 5..=100, 25),
         invert_vertical: on("invertVertical"),
         invert_horizontal: on("invertHorizontal"),
+        pad_vertical: on("padVertical"),
+        pad_horizontal: on("padHorizontal"),
         sideways: on("sideways").then(|| match text("sidewaysKey") {
             "Alt" => keys::ALT,
             "Ctrl" => keys::CTRL,

@@ -38,6 +38,12 @@ const CHARTER: &str = "You were started from a small chat box, not a terminal: \
 the user reads only your final message, in a small card. Write it as plain \
 Markdown and keep it short: what was done, what changed, and where any files are.";
 
+/// The relay keeps headless runs (`claude -p`, the Agent SDK, scheduled jobs)
+/// off the island unless they say they are watched: a task is, its pill is the
+/// point. Handed through Claude Code's own settings, whose `env` its hooks
+/// inherit. The name is the relay's (hook/src/main.rs, WATCHED).
+const WATCHED: &str = r#"{"env":{"LINTEL_WATCHED":"1"}}"#;
+
 /// The running tasks, so Cancel can reach them.
 static RUNNING: Mutex<BTreeMap<u64, Arc<Handle>>> = Mutex::new(BTreeMap::new());
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -70,7 +76,9 @@ pub fn start(prompt: String, folder: &str, on_end: impl FnOnce(u64, Ended) + Sen
         id
     };
     let spec = Spec {
-        args: ["-p", "--output-format", "json", "--append-system-prompt", CHARTER].map(String::from).to_vec(),
+        args: ["-p", "--output-format", "json", "--append-system-prompt", CHARTER, "--settings", WATCHED]
+            .map(String::from)
+            .to_vec(),
         stdin: Some(prompt),
         cwd: folder.to_path_buf(),
         timeout: TIME_LIMIT,

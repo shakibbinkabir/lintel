@@ -330,6 +330,21 @@
       "pt-BR": "Uso de agentes",
       "ru": "Использование агентов",
       "id": "Penggunaan agen"
+    },
+    "A Claude Code profile folder. Switched off, it is not read.": {
+      "en": "A Claude Code profile folder. Switched off, it is not read."
+    },
+    "{n}% a day until the reset": {
+      "en": "{n}% a day until the reset"
+    },
+    "on an even pace": {
+      "en": "on an even pace"
+    },
+    "{n} points over an even pace": {
+      "en": "{n} points over an even pace"
+    },
+    "{n} points under an even pace": {
+      "en": "{n} points under an even pace"
     }
   }
 }

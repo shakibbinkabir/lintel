@@ -11,9 +11,10 @@ svc-apps = { path = "../svc-apps" }
 svc-fs = { path = "../svc-fs" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 # List the Win32 API sets this feature calls; Cargo unifies them across the workspace.
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_Storage_FileSystem"] }
 
 # Every example of the workspace is linked into target/<profile>/examples/ under
 # its own name, so it is named after the package.

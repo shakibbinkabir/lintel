@@ -96,6 +96,12 @@ pub struct GitHubPulse {
     pub to_review: Vec<GitHubPr>,
     #[serde(rename = "mainCI")]
     pub main_ci: Vec<GitHubRepoCi>,
+    /// CI of the branch a session is on, when it is not the default one.
+    #[serde(rename = "branchCI")]
+    pub branch_ci: Vec<GitHubRepoCi>,
+    /// The GitLab or Gitea host merged into this pulse.
+    #[serde(rename = "forgeHost", skip_serializing_if = "Option::is_none")]
+    pub forge_host: Option<String>,
     /// Unix time in milliseconds.
     #[serde(rename = "fetchedAt")]
     pub fetched_at: u64,
@@ -240,7 +246,27 @@ impl GitHubPulse {
             });
         }
 
-        Some(GitHubPulse { login, my_prs, to_review, main_ci, fetched_at: now_ms })
+        // The branches the sessions are on (b0, b1…), when not the default one.
+        let mut branch_ci: Vec<GitHubRepoCi> = Vec::new();
+        for (_, node) in data.iter().filter(|(k, _)| k.len() > 1 && k.starts_with('b') && k[1..].chars().all(|c| c.is_ascii_digit())) {
+            let (Some(repo), Some(url)) = (str_at(node, "nameWithOwner"), str_at(node, "url")) else { continue };
+            let Some(branch_ref) = node.get("ref").filter(|b| b.is_object()) else { continue };
+            let Some(branch) = str_at(branch_ref, "name") else { continue };
+            let default = node.get("defaultBranchRef").and_then(|b| str_at(b, "name"));
+            if default == Some(branch) || branch_ci.iter().any(|r| r.repo == repo && r.branch == branch) {
+                continue;
+            }
+            let target = branch_ref.get("target");
+            branch_ci.push(GitHubRepoCi {
+                repo: repo.to_string(),
+                url: url.to_string(),
+                branch: branch.to_string(),
+                ci: CiState::from_github(target.and_then(|t| t.get("statusCheckRollup")).and_then(|r| str_at(r, "state"))),
+                head_sha: target.and_then(|t| str_at(t, "oid")).map(str::to_string),
+            });
+        }
+
+        Some(GitHubPulse { login, my_prs, to_review, main_ci, branch_ci, forge_host: None, fetched_at: now_ms })
     }
 
     /// True when a PR's CI or a default branch is still running — the next poll
@@ -248,6 +274,7 @@ impl GitHubPulse {
     pub fn has_pending(&self) -> bool {
         self.my_prs.iter().any(|p| p.ci == CiState::Pending)
             || self.main_ci.iter().any(|r| r.ci == CiState::Pending)
+            || self.branch_ci.iter().any(|r| r.ci == CiState::Pending)
     }
 
     /// With a watch list, only what belongs to it stays (cards and alerts alike).
@@ -255,6 +282,7 @@ impl GitHubPulse {
         self.my_prs.retain(|p| watched(watch, &p.repo));
         self.to_review.retain(|p| watched(watch, &p.repo));
         self.main_ci.retain(|r| watched(watch, &r.repo));
+        self.branch_ci.retain(|r| watched(watch, &r.repo));
     }
 
     /// Alerts between two polls. The first poll after launch (or after the token
@@ -466,6 +494,13 @@ query {
 pub fn pulse_query(watch: &[String]) -> String {
     let mut query = PULSE_QUERY.trim_end().to_string();
     query.pop(); // the closing brace
+    for (i, (repo, branch)) in session_branches().iter().enumerate() {
+        let (owner, name) = repo.split_once('/').unwrap_or_default();
+        query.push_str(&format!(
+            "b{i}: repository(owner: \"{owner}\", name: \"{name}\") {{ nameWithOwner url defaultBranchRef {{ name }} ref(qualifiedName: \"refs/heads/{branch}\") {{ name target {{ ... on Commit {{ oid statusCheckRollup {{ state }} }} }} }} }}
+"
+        ));
+    }
     for (i, repo) in watch.iter().enumerate().filter(|(_, r)| repo_ok(r)) {
         let (owner, name) = repo.split_once('/').unwrap_or_default();
         query.push_str(&format!(
@@ -498,6 +533,66 @@ query {
 /// can quote the query, not secrets, but there is no need for it).
 pub fn graphql_error_count(root: &Value) -> usize {
     root.get("errors").and_then(Value::as_array).map(Vec::len).unwrap_or(0)
+}
+
+// ── Branches of the sessions ──────────────────────────────────────────────────
+//
+// The island tells which folders its sessions work in (`github_refresh`); the
+// branch and the origin are read from the folder's `.git` files, no git process.
+
+static SESSION_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_session_dirs(dirs: Vec<String>) {
+    *SESSION_DIRS.lock().unwrap() = dirs.into_iter().take(8).collect();
+}
+
+/// "owner/name" of a github.com remote address.
+fn github_repo_of(url: &str) -> Option<&str> {
+    let rest = ["https://github.com/", "git@github.com:", "ssh://git@github.com/"]
+        .iter()
+        .find_map(|p| url.strip_prefix(p))?;
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    repo_ok(rest).then_some(rest)
+}
+
+/// (repo, branch) of the checkout at or above `dir`; None for a detached head,
+/// another host or a worktree (debt: `.git` as a file is not followed).
+fn git_branch_of(dir: &str) -> Option<(String, String)> {
+    let mut at = std::path::Path::new(dir);
+    while !at.join(".git").is_dir() {
+        at = at.parent()?;
+    }
+    let git = at.join(".git");
+    let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
+    let branch = head.trim().strip_prefix("ref: refs/heads/")?;
+    // The branch goes into a query: plain name characters only.
+    if branch.is_empty() || !branch.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c)) {
+        return None;
+    }
+    let config = std::fs::read_to_string(git.join("config")).ok()?;
+    let mut in_origin = false;
+    let mut url = None;
+    for line in config.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_origin = line.starts_with("[remote \"origin\"]");
+        } else if in_origin {
+            if let Some(v) = line.strip_prefix("url").and_then(|v| v.trim_start().strip_prefix('=')) {
+                url = Some(v.trim().to_string());
+            }
+        }
+    }
+    Some((github_repo_of(&url?)?.to_string(), branch.to_string()))
+}
+
+fn session_branches() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for found in SESSION_DIRS.lock().unwrap().iter().filter_map(|d| git_branch_of(d)) {
+        if out.len() < 5 && !out.contains(&found) {
+            out.push(found);
+        }
+    }
+    out
 }
 
 // ── The local `gh` login ──────────────────────────────────────────────────────
@@ -597,7 +692,176 @@ pub async fn pulse_through_gh() -> Result<Value, String> {
         .unwrap_or(0);
     let mut pulse = GitHubPulse::parse(&root, now).ok_or_else(|| t("Unexpected API response."))?;
     pulse.retain_watched(&watch);
+    forge_into(&mut pulse).await;
     Ok(json!({ "pulse": pulse }))
+}
+
+// ── GitLab and Gitea ──────────────────────────────────────────────────────────
+//
+// Settings → Integrations → GitHub takes an address (`forge-url`, https only)
+// and a token (`forge-token`, Credential Manager). Their merge requests,
+// reviews and pipelines join the same pulse; the token goes to that host only.
+
+struct Forge {
+    base: reqwest::Url,
+    token: String,
+    gitlab: bool,
+}
+
+fn forge_setup() -> Option<Forge> {
+    let mut base = net::keyed_url(&crate::secrets::get("forge-url")?).ok().filter(|u| u.scheme() == "https")?;
+    let token = crate::secrets::get("forge-token").filter(|t| !t.trim().is_empty())?;
+    if !base.path().ends_with('/') {
+        base.set_path(&format!("{}/", base.path()));
+    }
+    // debt: GitLab is told by its name in the address; any other host is taken for Gitea.
+    let gitlab = base.host_str()?.to_ascii_lowercase().contains("gitlab");
+    Some(Forge { base, token, gitlab })
+}
+
+fn forge_ci(raw: Option<&str>) -> CiState {
+    match raw {
+        Some("success") => CiState::Success,
+        Some("failed") | Some("failure") | Some("error") | Some("canceled") | Some("cancelled") => CiState::Failure,
+        Some("running") | Some("pending") | Some("created") | Some("preparing") | Some("scheduled")
+        | Some("waiting_for_resource") => CiState::Pending,
+        _ => CiState::Unknown,
+    }
+}
+
+fn is_wip(title: &str) -> bool {
+    let t = title.trim_start().to_ascii_lowercase();
+    ["wip:", "[wip]", "draft:", "[draft]"].iter().any(|p| t.starts_with(p))
+}
+
+fn int_at(v: &Value, key: &str) -> i64 {
+    v.get(key).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn list(v: Option<Value>) -> Vec<Value> {
+    v.and_then(|v| v.as_array().cloned()).unwrap_or_default()
+}
+
+impl Forge {
+    async fn get(&self, http: &reqwest::Client, path: &str, query: &[(&str, &str)]) -> Option<Value> {
+        let mut url = self.base.join(path).ok()?;
+        url.query_pairs_mut().extend_pairs(query);
+        let request = http.get(url).header("User-Agent", notch_brand::SLUG);
+        let request = if self.gitlab {
+            request.header("PRIVATE-TOKEN", &self.token)
+        } else {
+            request.header("Authorization", format!("token {}", self.token))
+        };
+        let response = request.send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        serde_json::from_slice(&net::read_capped(response, net::MAX_BODY).await.ok()?).ok()
+    }
+
+    fn pr(&self, repo: &str, number: i64, title: &str, url: &str, ci: CiState, sha: Option<String>, mine: bool) -> GitHubPr {
+        GitHubPr {
+            id: format!("{}:{repo}#{number}", self.base.host_str().unwrap_or("")),
+            title: title.to_string(),
+            url: url.to_string(),
+            repo: repo.to_string(),
+            number,
+            is_draft: is_wip(title),
+            ci,
+            review: if mine { ReviewState::Unknown } else { ReviewState::Pending },
+            head_sha: sha,
+        }
+    }
+
+    /// (my requests, requests waiting for me, default branches), each at most a handful.
+    async fn pulse(&self, http: &reqwest::Client) -> Option<(Vec<GitHubPr>, Vec<GitHubPr>, Vec<GitHubRepoCi>)> {
+        let (mut mine, mut review, mut main) = (Vec::new(), Vec::new(), Vec::new());
+        if self.gitlab {
+            let me = self.get(http, "api/v4/user", &[]).await?;
+            let me = str_at(&me, "username")?.to_string();
+            let repo_of = |mr: &Value| {
+                let full = mr.get("references").and_then(|r| str_at(r, "full")).unwrap_or("");
+                full.split('!').next().unwrap_or("").to_string()
+            };
+            let own = list(self.get(http, "api/v4/merge_requests", &[("scope", "created_by_me"), ("state", "opened"), ("per_page", "10")]).await);
+            for mr in &own {
+                let (iid, project) = (int_at(mr, "iid"), int_at(mr, "project_id"));
+                // debt: one request per merge request for its pipeline, ten at most.
+                let full = self.get(http, &format!("api/v4/projects/{project}/merge_requests/{iid}"), &[]).await;
+                let status = full.as_ref().and_then(|f| f.get("head_pipeline")).and_then(|p| str_at(p, "status"));
+                mine.push(self.pr(&repo_of(mr), iid, str_at(mr, "title").unwrap_or(""), str_at(mr, "web_url").unwrap_or(""),
+                    forge_ci(status), str_at(mr, "sha").map(str::to_string), true));
+            }
+            let asked = list(self.get(http, "api/v4/merge_requests", &[("scope", "all"), ("state", "opened"), ("reviewer_username", &me), ("per_page", "20")]).await);
+            for mr in &asked {
+                review.push(self.pr(&repo_of(mr), int_at(mr, "iid"), str_at(mr, "title").unwrap_or(""), str_at(mr, "web_url").unwrap_or(""),
+                    CiState::Unknown, None, false));
+            }
+            let projects = list(self.get(http, "api/v4/projects", &[("membership", "true"), ("archived", "false"), ("order_by", "last_activity_at"), ("per_page", "5")]).await);
+            for p in &projects {
+                let (Some(repo), Some(url), Some(branch)) = (str_at(p, "path_with_namespace"), str_at(p, "web_url"), str_at(p, "default_branch")) else { continue };
+                let pipes = list(self.get(http, &format!("api/v4/projects/{}/pipelines", int_at(p, "id")), &[("ref", branch), ("per_page", "1")]).await);
+                let last = pipes.first();
+                main.push(GitHubRepoCi {
+                    repo: repo.to_string(), url: url.to_string(), branch: branch.to_string(),
+                    ci: forge_ci(last.and_then(|l| str_at(l, "status"))),
+                    head_sha: last.and_then(|l| str_at(l, "sha")).map(str::to_string),
+                });
+            }
+        } else {
+            let me = self.get(http, "api/v1/user", &[]).await?;
+            let uid = int_at(&me, "id").to_string();
+            let own = list(self.get(http, "api/v1/repos/issues/search", &[("type", "pulls"), ("state", "open"), ("created", "true"), ("limit", "10")]).await);
+            for it in &own {
+                let Some(repo) = it.get("repository").and_then(|r| str_at(r, "full_name")) else { continue };
+                let number = int_at(it, "number");
+                // debt: two requests per pull request for its commit status, ten at most.
+                let full = self.get(http, &format!("api/v1/repos/{repo}/pulls/{number}"), &[]).await;
+                let sha = full.as_ref().and_then(|f| f.get("head")).and_then(|h| str_at(h, "sha")).map(str::to_string);
+                let status = match &sha {
+                    Some(sha) => self.get(http, &format!("api/v1/repos/{repo}/commits/{sha}/status"), &[]).await,
+                    None => None,
+                };
+                mine.push(self.pr(repo, number, str_at(it, "title").unwrap_or(""), str_at(it, "html_url").unwrap_or(""),
+                    forge_ci(status.as_ref().and_then(|s| str_at(s, "state"))), sha, true));
+            }
+            let asked = list(self.get(http, "api/v1/repos/issues/search", &[("type", "pulls"), ("state", "open"), ("review_requested", "true"), ("limit", "20")]).await);
+            for it in &asked {
+                let Some(repo) = it.get("repository").and_then(|r| str_at(r, "full_name")) else { continue };
+                review.push(self.pr(repo, int_at(it, "number"), str_at(it, "title").unwrap_or(""), str_at(it, "html_url").unwrap_or(""),
+                    CiState::Unknown, None, false));
+            }
+            let repos = self.get(http, "api/v1/repos/search", &[("uid", &uid), ("sort", "updated"), ("order", "desc"), ("limit", "5")]).await;
+            for r in repos.as_ref().and_then(|v| v.get("data")).and_then(Value::as_array).into_iter().flatten() {
+                if r.get("archived").and_then(Value::as_bool).unwrap_or(false) {
+                    continue;
+                }
+                let (Some(repo), Some(url), Some(branch)) = (str_at(r, "full_name"), str_at(r, "html_url"), str_at(r, "default_branch")) else { continue };
+                let status = self.get(http, &format!("api/v1/repos/{repo}/commits/{branch}/status"), &[]).await;
+                main.push(GitHubRepoCi {
+                    repo: repo.to_string(), url: url.to_string(), branch: branch.to_string(),
+                    ci: forge_ci(status.as_ref().and_then(|s| str_at(s, "state"))),
+                    head_sha: status.as_ref().and_then(|s| str_at(s, "sha")).map(str::to_string),
+                });
+            }
+        }
+        Some((mine, review, main))
+    }
+}
+
+/// Adds the configured GitLab or Gitea host to the pulse. Silent when none is
+/// set up or it does not answer: GitHub's part stays as it is.
+pub async fn forge_into(pulse: &mut GitHubPulse) {
+    if notch_core::paused() {
+        return;
+    }
+    let Some(forge) = forge_setup() else { return };
+    let Ok(http) = net::keyed_client(&forge.base, Duration::from_secs(15)) else { return };
+    let Some((mine, review, main)) = forge.pulse(&http).await else { return };
+    pulse.my_prs.extend(mine);
+    pulse.to_review.extend(review);
+    pulse.main_ci.extend(main);
+    pulse.forge_host = forge.base.host_str().map(str::to_string);
 }
 
 // ── Tests (GitHubPulseTests.swift, GitHubActivityTests.swift) ────────────────

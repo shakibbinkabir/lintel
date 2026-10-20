@@ -2,6 +2,7 @@
 // a timer exists only while one is running (one parked thread), and `stop` leaves nothing behind.
 
 pub mod clock;
+mod power;
 
 use clock::Clock;
 use notch_core::{Ctx, Feature, Group, Manifest, ShortcutDef};
@@ -22,6 +23,7 @@ static MANIFEST: Manifest = Manifest {
 };
 
 pub struct TimersDownloads {
+    power: Arc<power::Power>,
     run: Mutex<Option<(Clock, svc_sysevents::Sub)>>,
 }
 
@@ -48,13 +50,29 @@ impl Feature for TimersDownloads {
         Ok(())
     }
 
-    fn stop(&self, _cx: &Ctx) {
+    fn stop(&self, cx: &Ctx) {
         if let Some((c, _sub)) = self.run.lock().unwrap().take() {
             c.stop();
         }
+        self.power.cancel(cx);
     }
 
     fn call(&self, cx: &Ctx, method: &str, args: Value) -> Result<Value, String> {
+        // The power timer stands apart from the clock.
+        match method {
+            "powerState" => return Ok(self.power.json()),
+            "powerArm" => return self.power.arm(cx, args["action"].as_str().unwrap_or(""), args["at"].as_u64().unwrap_or(0)),
+            "powerCancel" => {
+                self.power.cancel(cx);
+                return Ok(Value::Null);
+            }
+            // Shutdown runs only from the click on the page's question.
+            "powerNow" => {
+                power::run(if args["action"].as_str() == Some("shutdown") { "shutdown" } else { "sleep" });
+                return Ok(Value::Null);
+            }
+            _ => {}
+        }
         let clock = self.run.lock().unwrap().as_ref().map(|r| r.0.clone()).ok_or("turned off")?;
         // the saved settings fill what a start leaves out (a shortcut start, the auto option)
         let start = |args: &Value| {
@@ -88,5 +106,5 @@ impl Feature for TimersDownloads {
 }
 
 pub fn feature() -> Arc<dyn Feature> {
-    Arc::new(TimersDownloads { run: Mutex::new(None) })
+    Arc::new(TimersDownloads { run: Mutex::new(None), power: Arc::default() })
 }

@@ -131,7 +131,7 @@ let gitHubShown = false;
 /** The GitHub card just came on screen (focused, island opened): refresh it if stale. */
 function refreshGitHubWhenShown() {
   const shown = State.mode === "expanded" && State.focusTask?.id === GITHUB;
-  if (shown && !gitHubShown) void Bridge.githubRefresh("pulse");
+  if (shown && !gitHubShown) void Bridge.githubRefresh("pulse", State.tasks.flatMap((x) => x.sessionCwd ?? []));
   gitHubShown = shown;
 }
 

@@ -13,6 +13,7 @@ import { btn, card, field, iconBtn, row, stripRow, toggle } from "../../ui/compo
 interface Ev {
   title: string;
   location: string;
+  description?: string;
   start: number;
   end: number;
   allDay: boolean;
@@ -33,7 +34,7 @@ const MIN = 60e3;
 const CALCOM_COLOR = "#c9956a";
 
 let C: FeatureCtx | undefined; // the island page's context; settings use their own
-let opts = { countdown: true, calcom: true, lead: 60, alarm: 0 };
+let opts = { countdown: true, calcom: true, description: true, lead: 60, alarm: 0 };
 /** What the strip shows: events that start together make one card (Rust decides, see ics::cards). */
 interface Card { start: number; inProgress: boolean; events: { title: string; link: string | null }[] }
 let cards: Card[] = [];
@@ -182,7 +183,7 @@ export default defineFeature({
   start(cx) {
     C = cx;
     const num = (v: unknown, d: number) => (typeof v === "number" && v >= 0 ? v : d);
-    const read = (s: Record<string, unknown>) => (opts = { countdown: s.countdown !== false, calcom: s.calcom !== false, lead: Math.min(240, Math.max(5, num(s.lead, 60))), alarm: num(s.alarm, 0) });
+    const read = (s: Record<string, unknown>) => (opts = { countdown: s.countdown !== false, calcom: s.calcom !== false, description: s.description !== false, lead: Math.min(240, Math.max(5, num(s.lead, 60))), alarm: num(s.alarm, 0) });
     cx.settings.get().then((s) => {
       read(s);
       loadUpcoming();
@@ -294,12 +295,13 @@ function weekPage(cx: FeatureCtx) {
     const now = Date.now();
     const body = list.length
       ? list.map((e) =>
-          h("div", { class: "f-calendar-ev" },
+          h("div", { class: "f-calendar-ev", onclick: (ev: Event) => ((ev.currentTarget as HTMLElement).querySelector(".f-calendar-desc")?.classList.toggle("open")) },
             h("span", { class: "f-calendar-bar", style: `background:${e.color}` }),
             h("span", { class: "f-calendar-time", text: e.allDay ? cx.t("All day") : `${clock(e.start)}${e.end > e.start ? " – " + clock(e.end) : ""}` }),
             h("span", { class: "f-calendar-name" },
               h("b", { text: e.title }),
-              e.unsupported ? h("small", { class: "warn", text: cx.t("Unsupported rule") }) : e.location ? h("small", { text: e.location }) : null),
+              e.unsupported ? h("small", { class: "warn", text: cx.t("Unsupported rule") }) : e.location ? h("small", { text: e.location }) : null,
+              opts.description && e.description ? h("small", { class: "f-calendar-desc", text: e.description }) : null),
             e.calcom ? h("small", { class: "f-calendar-tag", text: "Cal.com" }) : null,
             e.link && e.end > now ? btn(cx.t("Join"), "primary", () => join(e.link!)) : null,
             !e.allDay && e.start <= now && e.end > now ? h("small", { class: "f-calendar-tag now", text: cx.t("Now") }) : null))
@@ -429,6 +431,7 @@ function settingsPage(cx: FeatureCtx) {
       row(cx.t("Time before a meeting"), select(opt([15, 30, 60, 120]), String(Math.min(240, Math.max(5, Number(s.lead) || 60))), (v) => cx.settings.patch({ lead: Number(v) })), cx.t("A meeting with a video link (Meet, Zoom, Teams, Webex) shows in the strip this long before it starts, with a Join button.")),
       row(cx.t("Alert before an event"), select([["0", cx.t("Off")], ...opt([5, 10, 15, 30])], String(Number(s.alarm) || 0), (v) => cx.settings.patch({ alarm: Number(v) })), cx.t("A notice shows this long before any timed event, with or without a video link.")),
       row(cx.t("Countdown"), toggle(s.countdown !== false, (on) => cx.settings.patch({ countdown: on })), cx.t("Shows the next event in the strip during the hour before it starts.")),
+      row(cx.t("Event descriptions"), toggle(s.description !== false, (on) => cx.settings.patch({ description: on })), cx.t("Shows the text of an event under its title. Long text opens when you click it.")),
       row(cx.t("Cal.com bookings"), toggle(s.calcom !== false, (on) => cx.settings.patch({ calcom: on })), cx.t("Shows bookings from the Cal.com integration as events. Turn the integration on in its own page.")),
     ]));
   });

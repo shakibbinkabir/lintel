@@ -1547,6 +1547,87 @@
       "pt-BR": "Arquivos temporários",
       "ru": "Временные файлы",
       "id": "File sementara"
+    },
+    "Duplicates": {
+      "en": "Duplicates"
+    },
+    "Disk": {
+      "en": "Disk"
+    },
+    "Duplicate files": {
+      "en": "Duplicate files"
+    },
+    "Reading your folders…": {
+      "en": "Reading your folders…"
+    },
+    "Comparing {done} of {total}": {
+      "en": "Comparing {done} of {total}"
+    },
+    "Looking for copies…": {
+      "en": "Looking for copies…"
+    },
+    "Files are compared by size, then by their contents. Nothing is removed.": {
+      "en": "Files are compared by size, then by their contents. Nothing is removed."
+    },
+    "Not searched yet": {
+      "en": "Not searched yet"
+    },
+    "Looks in Documents, Downloads, Desktop, Pictures and Videos, at files over 256 KB.": {
+      "en": "Looks in Documents, Downloads, Desktop, Pictures and Videos, at files over 256 KB."
+    },
+    "{n} file has copies": {
+      "en": "{n} file has copies"
+    },
+    "{n} files have copies": {
+      "en": "{n} files have copies"
+    },
+    "No copies found": {
+      "en": "No copies found"
+    },
+    "Keep at least one copy of every file.": {
+      "en": "Keep at least one copy of every file."
+    },
+    "{size} could be freed · {ticked} ticked": {
+      "en": "{size} could be freed · {ticked} ticked"
+    },
+    "Searched {when}": {
+      "en": "Searched {when}"
+    },
+    "Find copies": {
+      "en": "Find copies"
+    },
+    "Tick the extra copies": {
+      "en": "Tick the extra copies"
+    },
+    "{n} copy": {
+      "en": "{n} copy"
+    },
+    "{n} copies": {
+      "en": "{n} copies"
+    },
+    "each": {
+      "en": "each"
+    },
+    "A folder, such as C:Users": {
+      "en": "A folder, such as C:Users"
+    },
+    "Scan folder": {
+      "en": "Scan folder"
+    },
+    "Home": {
+      "en": "Home"
+    },
+    "Reading": {
+      "en": "Reading"
+    },
+    "Pick a drive or type a folder. Only sizes are read.": {
+      "en": "Pick a drive or type a folder. Only sizes are read."
+    },
+    "Nothing scanned yet": {
+      "en": "Nothing scanned yet"
+    },
+    "The chart never deletes anything. Show a part in Explorer to deal with it there.": {
+      "en": "The chart never deletes anything. Show a part in Explorer to deal with it there."
     }
   }
 }

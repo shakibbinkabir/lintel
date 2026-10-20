@@ -12,7 +12,7 @@ use windows::Foundation::TimeSpan;
 use windows_future::{AsyncActionProgressHandler, AsyncStatus};
 use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat, BitmapTransform, ColorManagementMode, ExifOrientationMode};
 use windows::Media::Editing::{MediaClip, MediaComposition, VideoFramePrecision};
-use windows::Media::MediaProperties::{AudioEncodingProperties, MediaEncodingProfile, VideoEncodingQuality};
+use windows::Media::MediaProperties::{AudioEncodingProperties, AudioEncodingQuality, MediaEncodingProfile, VideoEncodingQuality};
 use windows::Media::Transcoding::{MediaTranscoder, TranscodeFailureReason};
 use windows::Storage::{CreationCollisionOption, StorageFile, StorageFolder};
 
@@ -154,6 +154,58 @@ pub fn compress(input: &Path, o: &Opts, cancel: &AtomicBool, progress: Progress)
     }
     std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
     progress(1.0);
+    Ok(out)
+}
+
+/// The sound of an audio or video file as an MP3 beside it (Windows' own MP3 encoder); answers its path.
+pub fn audio(input: &Path, trim: (f64, f64), cancel: &AtomicBool, progress: Progress) -> Result<PathBuf, String> {
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let dir = absolute(input.parent().unwrap_or(Path::new(".")))?;
+    let out = svc_shell::free_name(&dir, &format!("{stem}.mp3"));
+    let part = svc_shell::free_name(&dir, &format!("{stem}.mp3.part"));
+    let src = file(input)?;
+    let folder = StorageFolder::GetFolderFromPathAsync(&HSTRING::from(dir.to_string_lossy().as_ref())).map_err(e)?.get().map_err(e)?;
+    let name = part.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let dst = folder.CreateFileAsync(&HSTRING::from(name), CreationCollisionOption::ReplaceExisting).map_err(e)?.get().map_err(e)?;
+    let profile = MediaEncodingProfile::CreateMp3(AudioEncodingQuality::High).map_err(e)?;
+    let t = MediaTranscoder::new().map_err(e)?;
+    if trim.0 > 0.0 {
+        t.SetTrimStartTime(TimeSpan { Duration: (trim.0 * 1e7) as i64 }).map_err(e)?;
+    }
+    if trim.1 > 0.0 {
+        t.SetTrimStopTime(TimeSpan { Duration: (trim.1 * 1e7) as i64 }).map_err(e)?;
+    }
+    let prep = t.PrepareFileTranscodeAsync(&src, &dst, &profile).map_err(e)?.get().map_err(e)?;
+    if !prep.CanTranscode().map_err(e)? {
+        let _ = std::fs::remove_file(&part);
+        return Err(match prep.FailureReason().map_err(e)? {
+            TranscodeFailureReason::CodecNotFound => "Media Feature Pack needed: Windows has no codec for this file.".into(),
+            _ => "Windows cannot take the sound out of this file.".to_string(),
+        });
+    }
+    let op = prep.TranscodeAsync().map_err(e)?;
+    op.SetProgress(&AsyncActionProgressHandler::new(move |_, f| {
+        progress(*f / 100.0);
+        Ok(())
+    }))
+    .map_err(e)?;
+    let began = Instant::now();
+    while op.Status().map_err(e)? == AsyncStatus::Started {
+        if cancel.load(Ordering::Relaxed) || began.elapsed() > LIMIT {
+            let _ = op.Cancel();
+            while op.Status().ok() == Some(AsyncStatus::Started) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let _ = std::fs::remove_file(&part);
+            return Err(if cancel.load(Ordering::Relaxed) { "Cancelled.".into() } else { "The conversion took too long and was stopped.".into() });
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    if let Err(err) = op.GetResults() {
+        let _ = std::fs::remove_file(&part);
+        return Err(e(err));
+    }
+    std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
     Ok(out)
 }
 

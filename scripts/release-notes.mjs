@@ -38,7 +38,7 @@ console.log(`Lintel is a notch toolkit for Windows: an island that stays hidden 
 
 1. Download \`${file}\` below, or run \`winget install ShakibBinKabir.Lintel\` once this version has reached winget.
 2. Run it. It installs for your account only and does not ask for administrator rights.
-3. If the installer is not code-signed, Windows SmartScreen shows a warning. Choose "More info", then "Run anyway", if you trust this download.
+3. The installer is not code-signed, so Windows SmartScreen shows a warning. Choose "More info", then "Run anyway", if you trust this download.
 
 Requires Windows 10 or 11 (64-bit).
 ${sha ? `\n**SHA-256 of \`${file}\`:** \`${sha}\`\n` : ""}
@@ -48,4 +48,4 @@ ${entry}
 
 ## Code signing policy
 
-The [code signing policy](https://lintel.thisissbk.com/download.html#signing) says how releases are built and signed. Lintel is licensed under GPL-3.0-or-later; the projects it grew from are credited in [NOTICE.md](https://github.com/shakibbinkabir/lintel/blob/main/NOTICE.md).`);
+The [code signing policy](https://lintel.thisissbk.com/download.html#signing) says how releases are built and why they are not signed. Lintel is licensed under GPL-3.0-or-later; the projects it grew from are credited in [NOTICE.md](https://github.com/shakibbinkabir/lintel/blob/main/NOTICE.md).`);

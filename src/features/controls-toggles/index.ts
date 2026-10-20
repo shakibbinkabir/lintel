@@ -214,7 +214,7 @@ function markdown(src: string): string {
       list = "";
     }
   };
-  for (const line of src.split("\n")) {
+  for (const [at, line] of src.split("\n").entries()) {
     if (line.startsWith("```")) {
       close();
       out.push(fence ? "</pre>" : "<pre>");
@@ -234,7 +234,9 @@ function markdown(src: string): string {
         out.push(`<${kind}>`);
         list = kind;
       }
-      out.push(`<li>${inline(li[2])}</li>`);
+      // "- [ ] x" and "- [x] x" are checkboxes; a click finds its line by `data-line`.
+      const box = /^\[([ xX])\]\s+(.*)/.exec(li[2]);
+      out.push(box ? `<li class="task"><input type="checkbox" data-line="${at}"${box[1] === " " ? "" : " checked"}> ${inline(box[2])}</li>` : `<li>${inline(li[2])}</li>`);
       continue;
     }
     close();
@@ -340,6 +342,16 @@ function buildNotes(cx: FeatureCtx): SectionHost {
     drawBody();
   };
 
+  // A tick in the preview changes that line of the text.
+  view.addEventListener("change", (e) => {
+    const box = e.target as HTMLInputElement;
+    if (!box.matches("input[data-line]")) return;
+    const lines = cur().text.split("\n");
+    const at = Number(box.dataset.line);
+    lines[at] = lines[at].replace(/\[[ xX]\]/, box.checked ? "[x]" : "[ ]");
+    cur().text = lines.join("\n");
+    later();
+  });
   area.addEventListener("input", later);
   find.addEventListener("keydown", (e) => {
     if ((e as KeyboardEvent).key !== "Enter" || !find.value || preview) return;

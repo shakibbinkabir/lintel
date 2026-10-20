@@ -96,6 +96,68 @@ impl Drop for Tree {
     }
 }
 
+/// The processes we run under, nearest first (the shell that ran us, Claude
+/// Code, its shell, the terminal…), at most 16, from one process snapshot.
+/// Sent with every event so the app finds the session's window even once we
+/// have exited, which an event nobody waits for has by the time it looks.
+/// (After upstream pull request 607.)
+pub fn ancestors() -> Vec<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    let mut parents = std::collections::HashMap::new();
+    // SAFETY: a snapshot handle we own, walked with a sized entry, then closed.
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
+        let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    let mut out = Vec::new();
+    let mut current = std::process::id();
+    while out.len() < 16 {
+        let Some(&parent) = parents.get(&current) else { break };
+        // PID 0 ends the tree; a reused PID could loop.
+        if parent == 0 || parent == current || out.contains(&parent) {
+            break;
+        }
+        out.push(parent);
+        current = parent;
+    }
+    out
+}
+
+/// The process that ran us, held open so its end is seen even if Windows
+/// reuses its number. A prompt answered in the terminal ends it (Claude Code
+/// ends the shell between us), and nothing is left to answer.
+pub struct Parent(HANDLE);
+
+impl Parent {
+    /// None when it cannot be opened: then the budget alone ends the wait.
+    pub fn of(pid: u32) -> Option<Self> {
+        use windows::Win32::System::Threading::PROCESS_SYNCHRONIZE;
+        // SAFETY: plain Win32 call; the handle is ours and closed on drop.
+        unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid).ok().map(Parent) }
+    }
+
+    pub fn gone(&self) -> bool {
+        use windows::Win32::Foundation::WAIT_OBJECT_0;
+        use windows::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: our own process handle; a zero timeout never blocks.
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for Parent {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
 /// The SID of the account this process runs as, as `S-1-5-21-…`.
 pub fn current_user_sid() -> Option<String> {
     unsafe { token_sid(GetCurrentProcess()) }

@@ -3,6 +3,7 @@
 
 import "./style.css";
 import { defineFeature, type FeatureCtx } from "../../core/feature";
+import { Bridge } from "../../core/bridge";
 import { Sound } from "../../core/sound";
 import { h } from "../../views/dom";
 import { t } from "../../i18n/i18n";
@@ -40,6 +41,12 @@ const full = (s: number) => (s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.flo
 /** The strip's shorter "12:04", "1h35". */
 const short = (s: number) => (s >= 3600 ? `${Math.floor(s / 3600)}h${pad(Math.floor(s / 60) % 60)}` : full(s));
 
+/** The power timer: sleep or shut down at `at` (ms). Rust counts; the page shows it. */
+let power: { action: "sleep" | "shutdown"; at: number } | null = null;
+const powerLeft = () => (power ? Math.max(0, Math.ceil((power.at - Date.now()) / 1000)) : 0);
+const powerCall = (m: string, a?: object) => Bridge.featureCall("timers-downloads", m, a);
+const powerWord = () => (power?.action === "shutdown" ? "Shut down" : "Sleep");
+
 const timerOn = () => clock.status !== "idle";
 
 export default defineFeature({
@@ -71,6 +78,15 @@ export default defineFeature({
       },
       mark: () => h("span", { class: "isl-ico warn" }, icon("timer", 14)),
     },
+    {
+      id: "power",
+      order: 7,
+      tick: true,
+      section: "timer",
+      isActive: () => power != null,
+      render: () => stripRow({ icon: "moon", tone: "warn", title: t(powerWord()), value: short(powerLeft()), action: { label: t("Cancel"), run: () => void powerCall("powerCancel") } }),
+      mark: () => h("span", { class: "isl-ico warn" }, icon("moon", 14)),
+    },
   ],
 
   sections: [
@@ -79,7 +95,7 @@ export default defineFeature({
       title: "Timer",
       icon: "timer",
       letter: "r",
-      height: 250,
+      height: 280,
       build: (cx) => timerPage(cx),
     },
   ],
@@ -112,7 +128,24 @@ export default defineFeature({
       at = Date.now();
       if (timerOn()) changed();
     });
+    const setPower = (p: { action: "sleep" | "shutdown" | null; at?: number }) => {
+      power = p.action ? { action: p.action, at: p.at! } : null;
+      cx.island.activityChanged("power");
+    };
+    cx.call<{ action: "sleep" | "shutdown" | null; at?: number }>("powerState").then((p) => p && setPower(p));
     const offs = [
+      cx.on("power", setPower),
+      // Shutdown asks first: nothing runs until the click.
+      cx.on<{ action: string }>("powerDue", () =>
+        cx.island.notice({
+          kind: "timer",
+          title: cx.t("Shut down now?"),
+          icon: "moon",
+          tone: "warn",
+          action: { label: cx.t("Shut down"), run: () => void cx.call("powerNow", { action: "shutdown" }) },
+          section: "timer",
+        }),
+      ),
       cx.on<Clock>("state", setClock),
       cx.on<{ mode: string; phase: string; next?: string; final: boolean; skipped?: boolean }>("done", (e) => {
         const pomo = e.mode === "pomodoro";
@@ -133,6 +166,7 @@ export default defineFeature({
       offS();
       stopAlarm();
       clock = IDLE;
+      power = null;
     };
   },
 });
@@ -212,7 +246,7 @@ function timerPage(cx: FeatureCtx) {
           : mode === "pomodoro"
             ? [h("div", { class: "f-timers-downloads-nums" }, num("focus", "Focus (min)", 1, 180), num("short", "Short break", 1, 60), num("long", "Long break", 1, 60), num("every", "Long every", 1, 24), num("sessions", "Sessions", 1, 24))]
             : [h("p", { class: "f-timers-downloads-hint", text: cx.t("Counts up with laps, to 99:59:59.") })];
-      el.replaceChildren(tabs, ...body, h("div", { class: "f-timers-downloads-actions" }, btn(cx.t("Start"), "primary", go)));
+      el.replaceChildren(tabs, ...body, h("div", { class: "f-timers-downloads-actions" }, btn(cx.t("Start"), "primary", go)), powerRow());
       return;
     }
     const label =
@@ -240,17 +274,43 @@ function timerPage(cx: FeatureCtx) {
       c.laps.length
         ? h("div", { class: "f-timers-downloads-laps" }, ...c.laps.map((l, i) => h("span", { text: `${i + 1}  ${full(Math.floor(l / 1000))}` })).reverse())
         : "",
+      powerRow(),
     );
     paint();
   }
   let readout = h("b");
+  /** Armed: the countdown and Cancel. Idle: pick sleep or shut down, and when. */
+  function powerRow(): HTMLElement | string {
+    if (power) {
+      return h("div", { class: "f-timers-downloads-power" }, h("span", { text: `${cx.t(powerWord())} · ${full(powerLeft())}` }), btn(cx.t("Cancel"), "ghost", () => void powerCall("powerCancel")));
+    }
+    if (clock.status !== "idle") return "";
+    const act = h("select", {}, h("option", { value: "sleep", text: cx.t("Sleep") }), h("option", { value: "shutdown", text: cx.t("Shut down") }));
+    const mins = h("select", {}, ...[15, 30, 60, 90, 120, 180].map((m) => h("option", { value: String(m), text: t("{count} min", { count: m }) })));
+    const at = h("input", { type: "time" });
+    const arm = () => {
+      let when = Date.now() + Number(mins.value) * 60000;
+      if (at.value) {
+        const [hh, mm] = at.value.split(":").map(Number);
+        const d = new Date();
+        d.setHours(hh, mm, 0, 0);
+        if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+        when = d.getTime();
+      }
+      void powerCall("powerArm", { action: act.value, at: when });
+    };
+    return h("div", { class: "f-timers-downloads-power" }, h("label", { class: "field" }, act), h("label", { class: "field" }, mins), at, btn(cx.t("Arm"), "secondary", arm));
+  }
+
   let drawnStatus = "";
   function paint() {
     if (big) big.textContent = full(secs());
+    const pr = el.querySelector(".f-timers-downloads-power span");
+    if (power && pr) pr.textContent = `${cx.t(powerWord())} · ${full(powerLeft())}`;
     if (bar && clock.totalMs) setMeter(bar, 1 - left() / clock.totalMs);
   }
   const tick = () => {
-    const key = `${clock.status}|${clock.mode}|${clock.phase}|${clock.laps.length}`;
+    const key = `${clock.status}|${clock.mode}|${clock.phase}|${clock.laps.length}|${power ? power.action : ""}`;
     if (key !== drawnStatus) { drawnStatus = key; draw(); } else paint();
   };
 

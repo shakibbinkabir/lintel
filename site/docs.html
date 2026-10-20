@@ -59,6 +59,7 @@
       <a href="#privacy">Privacy</a>
       <a href="#helper">Hardware sensors</a>
       <a href="#voice">Voice assistant</a>
+      <a href="#howto">Newer settings</a>
       <a href="#limits">Known limits</a>
       <a href="#build">Build from source</a>
       <a href="#architecture">Architecture</a>
@@ -84,7 +85,7 @@
       <p><strong>The island never takes the keyboard by appearing.</strong> Its window cannot be activated by a hover, a notice or a card. Your own window keeps the keyboard until you click the island or press one of its shortcuts.</p>
 
       <h2 id="keys">Keyboard and shortcuts</h2>
-      <p>Every global shortcut can be changed or turned off in Settings, Shortcuts. These are the defaults in version 1.0.0.</p>
+      <p>Every global shortcut can be changed or turned off in Settings, Shortcuts. These are the defaults in version 2.0.0.</p>
       <h3>The app</h3>
       <div class="table"><table>
         <thead><tr><th scope="col">Keys</th><th scope="col">Action</th></tr></thead>
@@ -115,6 +116,10 @@
           <tr><td class="keys"><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>R</kbd></td><td>Open the first wheel</td><td>Radial menu (off by default)</td></tr>
           <tr><td class="keys"><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>B</kbd></td><td>Send the companion home or out</td><td>Companion (off by default)</td></tr>
           <tr><td class="keys">Right <kbd>Ctrl</kbd>, alone</td><td>Talk to the assistant: tap, or hold</td><td>Voice (off by default)</td></tr>
+          <tr><td class="keys"><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Win</kbd> <kbd>←</kbd> / <kbd>→</kbd> / <kbd>↑</kbd> / <kbd>↓</kbd></td><td>Snap the window in front to the left, right, top or bottom half</td><td>Window layout (off by default)</td></tr>
+          <tr><td class="keys"><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Win</kbd> <kbd>P</kbd></td><td>Keep the window above the others. Press again to let it go.</td><td>Window layout (off by default)</td></tr>
+          <tr><td class="keys"><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Win</kbd> <kbd>Home</kbd> / <kbd>Backspace</kbd></td><td>Center the window, or put it back where it was</td><td>Window layout (off by default)</td></tr>
+          <tr><td class="keys"><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Win</kbd> <kbd>PgUp</kbd> / <kbd>PgDn</kbd></td><td>Move the window to the previous or next display</td><td>Window layout (off by default)</td></tr>
         </tbody>
       </table></div>
       <p>Other actions have no key until you give them one: pick a colour, copy text from the screen, measure, draw on the screen, capture a scrolling page, record the window in front, pause a recording, start the timer, keep awake, add a reminder.</p>
@@ -150,11 +155,12 @@
           <tr><th scope="row">lrclib.net</th><td>Turning on the lyrics lookup, then a song playing</td><td>Song title, artist, album and length</td></tr>
           <tr><th scope="row">open-meteo.com</th><td>Turning Weather on and choosing a city</td><td>The city name you typed, then its coordinates</td></tr>
           <tr><th scope="row">speed.cloudflare.com</th><td>Clicking the speed test button</td><td>Random test data. Nothing about you.</td></tr>
-          <tr><th scope="row">github.com</th><td>Clicking “Check for updates”</td><td>A plain request for the release feed</td></tr>
+          <tr><th scope="row">github.com</th><td>Agreeing to update checks, or clicking “Check for updates”; then clicking Update now</td><td>A plain request for the release feed, and for the installer. Nothing about you.</td></tr>
           <tr><th scope="row">winget sources</th><td>Clicking a check, a search or an install in Apps</td><td>What winget itself sends. Run by winget, not by Lintel.</td></tr>
           <tr><th scope="row">huggingface.co</th><td>Clicking a download button for a speech, voice or text model</td><td>A plain download request for pinned files</td></tr>
           <tr><th scope="row">Anthropic, OpenAI, Google, OpenRouter, or your own server</th><td>Saving a key or an address for chat, then sending a message</td><td>Your key (only to its own host), your message and the context you chose</td></tr>
           <tr><th scope="row">GitHub, Stripe, Vercel, Resend, Notion, Cal.com, your n8n</th><td>Saving a key for that integration</td><td>Your key and a read request. An email also needs your click.</td></tr>
+          <tr><th scope="row">Your SSH hosts</th><td>Adding a host and installing Claude Code there</td><td>Your own ssh program connects, with your keys. Lintel sends nothing else.</td></tr>
           <tr><th scope="row">Your calendar link</th><td>Adding a calendar link</td><td>A plain request for the .ics file</td></tr>
         </tbody>
       </table></div>
@@ -202,13 +208,49 @@
         <li><strong>Known limits.</strong> Voice is new and has had little testing. It was tested with recorded clips more than with live speech, and the wake phrase has not been measured with many voices. There is no echo cancelling, so over loudspeakers it also hears its own voice.</li>
       </ul>
 
-      <h2 id="limits">Known limits of version 1.0.0</h2>
+      <h2 id="howto">How to turn on the newer settings</h2>
+      <p>All of these start off, and each one asks before it changes anything.</p>
+      <h3>Claude Code in WSL</h3>
+      <ol class="steps">
+        <li><strong>Start your WSL distro.</strong>Lintel only sees distros that are running.</li>
+        <li><strong>Open Settings, Coding agents, Claude Code in WSL.</strong>Your distros are listed there.</li>
+        <li><strong>Connect one.</strong>Lintel shows the change to that distro’s Claude Code settings, keeps a dated backup, and writes nothing until you confirm. After that its sessions, Allow and Deny work as on Windows.</li>
+      </ol>
+      <h3>Claude Code on an SSH host</h3>
+      <ol class="steps">
+        <li><strong>Make sure the host has python3.</strong>Lintel puts a small Python relay there.</li>
+        <li><strong>Open Settings, Coding agents, Claude Code on SSH hosts.</strong>Add the host as you type it after <code>ssh</code>: an alias from your ssh config, or <code>user@host</code>.</li>
+        <li><strong>Install, after you see the change.</strong>Lintel uses your own ssh keys. Events come back through a tunnel that only reaches your PC, and Allow and Deny are answered on the island.</li>
+      </ol>
+      <h3>Notifications from other apps</h3>
+      <ol class="steps">
+        <li><strong>Open Settings, Features, Notifications and accessories.</strong></li>
+        <li><strong>Turn on “Show notifications from other apps (read as they pop up)”.</strong>Lintel then reads WhatsApp, Telegram, Teams, Mail and other pop-ups as they appear and shows them on the island. It needs no signing, and nothing leaves your PC. A click brings the app forward; the pop-up’s own buttons stay in the pop-up. While Focus or Do Not Disturb hides pop-ups there is nothing to read, and a second pop-up from the same app right after the first can be missed.</li>
+      </ol>
+      <h3>Updates from the island</h3>
+      <ol class="steps">
+        <li><strong>Agree once</strong> when Lintel asks whether it may look for new versions on GitHub. You can say no.</li>
+        <li><strong>When a newer version exists,</strong> the Apps section offers Update now, What’s new and Later.</li>
+        <li><strong>Update now</strong> downloads the installer from GitHub, checks it against GitHub’s SHA-256 and installs it. Nothing is installed before you click.</li>
+      </ol>
+      <h3>MCP tools in chat</h3>
+      <ol class="steps">
+        <li><strong>Open Settings, Chat, MCP tools.</strong>The servers you set up in Claude Desktop, Cursor, VS Code or Claude Code are listed. Lintel only reads their files.</li>
+        <li><strong>Turn on the ones you want.</strong>A server is started when chat needs it and stopped when it is idle.</li>
+        <li><strong>Every tool call asks first.</strong>Nothing runs without your click.</li>
+      </ol>
+
+      <h2 id="limits">Known limits of version 2.0.0</h2>
       <ul>
+        <li>The installer is not code-signed, so SmartScreen warns. The free signing program for open-source projects declined the project for now. A Microsoft Store version, signed by Microsoft, is being prepared.</li>
+        <li>Lintel installs a newer version only from the island, after you agreed to the check and clicked Update now. This path is new and has had little testing across real releases.</li>
+        <li>Claude Code in WSL needs a running distro. Claude Code on SSH hosts needs python3 on the host.</li>
+        <li>The Linear pill has not been tried against a real account.</li>
+        <li>The hooks for Antigravity, Cursor, Muse and Hermes have not been confirmed on a real install.</li>
+        <li>Notifications from other apps are the pop-ups Windows shows. They are off until you turn them on.</li>
         <li>The voice assistant understands English only, and it has had little testing with live speech.</li>
         <li>An answer from the local text model is slow on a laptop: 9 to 15 seconds before the first word, and about half a minute the first time after a start.</li>
-        <li>Mirroring the notifications of other apps is not available. Windows allows it only to a signed and packaged app.</li>
-        <li>The installer is not code-signed, so SmartScreen warns.</li>
-        <li>The interface is translated into ten languages, but some newer lines are English only.</li>
+        <li>The interface is translated into ten languages, but newer lines are English only.</li>
         <li>With “The small island stays” on and the mascot shown, the resting island uses about 10 % of one processor core. With the mascot hidden it is about 1 %.</li>
         <li>The island lives on one display at a time.</li>
         <li>On some laptops the sensor library cannot read the fans.</li>

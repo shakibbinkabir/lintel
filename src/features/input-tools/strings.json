@@ -1,5 +1,17 @@
 {
   "strings": {
+    "The mouse wheel only; the touchpad has its own switch below.": {
+      "en": "The mouse wheel only; the touchpad has its own switch below."
+    },
+    "Up and down on the touchpad, apart from the mouse wheel.": {
+      "en": "Up and down on the touchpad, apart from the mouse wheel."
+    },
+    "Reverse the touchpad": {
+      "en": "Reverse the touchpad"
+    },
+    "Reverse the touchpad sideways": {
+      "en": "Reverse the touchpad sideways"
+    },
     "Click, then press the keys": {
       "en": "Click, then press the keys",
       "zh-Hans": "点击后按下按键",

@@ -68,3 +68,7 @@
 .f-command-bar-settings > .f-command-bar-note { margin-top: 0; }
 .f-command-bar-settings .field { margin-bottom: var(--s-2); }
 .f-command-bar-settings textarea { font: 400 var(--t-sm) var(--mono); }
+
+/* The bar beside selected text: a row of icon buttons that never takes focus. */
+.f-command-bar-sel { flex-direction: row; align-items: center; gap: 2px; box-sizing: border-box; height: 100%; padding: var(--s-1) var(--s-2); }
+.f-command-bar-sel-note { padding: 0 var(--s-2); color: var(--text-2, inherit); white-space: nowrap; }

@@ -437,6 +437,17 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let _ = win.set_always_on_top(true);
 }
 
+/// The zoom that makes one CSS pixel one window pixel again, when the web view's
+/// pixel ratio differs from the window's scale (mixed-scale displays, text
+/// scaling): the open island would otherwise be cut off. None = nothing to do.
+pub fn zoom_correction(current: f64, scale: f64, dpr: f64) -> Option<f64> {
+    let ok = |v: f64| v.is_finite() && v > 0.0;
+    if !ok(dpr) || !ok(scale) || (dpr - scale).abs() / scale < 0.02 {
+        return None;
+    }
+    Some((current * scale / dpr).clamp(0.25, 4.0))
+}
+
 /// Position, size and scale of the monitor the island lives on. Any change here
 /// means the island has to be placed again.
 /// With every other display after it: a dragged island may live on any of them.
@@ -619,7 +630,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                 let accept = on_island || dragging || gate.collapsed.load(Ordering::Relaxed);
                 if gate.ignoring.load(Ordering::Relaxed) == accept {
                     gate.ignoring.store(!accept, Ordering::Relaxed);
-                    let _ = win.set_ignore_cursor_events(!accept);
+                    let _ = platform::set_click_through(&win, !accept);
                 }
 
                 let _ = win.emit("cursor", CursorPayload { x, y, down });
@@ -633,7 +644,7 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
             // (Both halves are ported from upstream `windows/src-tauri/src/island.rs`,
             // pull requests 114, 124 and 85.)
             if let Some(win) = window(&app) {
-                let _ = win.set_ignore_cursor_events(false);
+                let _ = platform::set_click_through(&win, false);
             }
             gate.forget_ignore_state();
             platform::keyhook::pointer(false);
@@ -650,6 +661,6 @@ pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
 
 pub fn set_ignore_cursor(app: &AppHandle, ignore: bool) {
     if let Some(win) = window(app) {
-        let _ = win.set_ignore_cursor_events(ignore);
+        let _ = platform::set_click_through(&win, ignore);
     }
 }

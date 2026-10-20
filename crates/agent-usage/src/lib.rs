@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use usage::{now_ms, Store};
+use notch_core::storage::{json_load, json_save_atomic};
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -26,8 +27,9 @@ static MANIFEST: Manifest = Manifest {
     uses: &[],
     shortcuts: &[],
     tray: &[],
-    // finishNotice: tell when a turn ends; minSeconds: the shortest turn that counts; liveWork: show running turns
-    defaults: r#"{ "finishNotice": true, "minSeconds": 120, "liveWork": true }"#,
+    // finishNotice: tell when a turn ends; minSeconds: the shortest turn that counts; liveWork: show running turns;
+    // hidden: card ids (a provider, or a Claude Code profile) that are not read or shown
+    defaults: r#"{ "finishNotice": true, "minSeconds": 120, "liveWork": true, "hidden": [] }"#,
 };
 
 struct Runner {
@@ -85,7 +87,7 @@ impl Feature for AgentUsage {
         let roots = usage::roots();
         let stopped = Arc::new(AtomicBool::new(false));
         let (tx, rx) = channel::<()>();
-        let handles = roots.iter().filter_map(|(_, p)| watch(p.clone(), tx.clone(), stopped.clone()).ok()).collect();
+        let handles = roots.iter().filter_map(|r| watch(r.path.clone(), tx.clone(), stopped.clone()).ok()).collect();
         let (store, ready) = (Arc::new(Mutex::new(Store::default())), Arc::new(AtomicBool::new(false)));
         *run = Some(Runner { stopped: stopped.clone(), handles, tx: Some(tx), store: store.clone(), ready: ready.clone() });
 
@@ -98,17 +100,18 @@ impl Feature for AgentUsage {
             loop {
                 let now = now_ms();
                 let mut ended = vec![];
+                let s = cx.settings("agent-usage");
+                let hidden: Vec<String> = s["hidden"].as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
                 store.lock().unwrap().found(&roots);
                 // debt: one very large log is still read in one go; nothing is kept between launches.
-                for (prov, log) in usage::logs(&roots, now) {
+                for (prov, card, log) in usage::logs(&roots, now, &hidden) {
                     if stopped.load(Ordering::SeqCst) {
                         return;
                     }
-                    store.lock().unwrap().read(prov, &log, now, !first, &mut ended);
+                    store.lock().unwrap().read(prov, &card, &log, now, !first, &mut ended);
                 }
                 first = false;
                 ready.store(true, Ordering::SeqCst);
-                let s = cx.settings("agent-usage");
                 if s["finishNotice"].as_bool() != Some(false) {
                     let min = s["minSeconds"].as_i64().unwrap_or(120).clamp(0, 3600) * 1000;
                     for e in ended.into_iter().filter(|e| e.duration_ms >= min && now_ms() - e.at < 300_000) {
@@ -143,8 +146,40 @@ impl Feature for AgentUsage {
         }
     }
 
-    fn call(&self, _cx: &Ctx, method: &str, _args: Value) -> Result<Value, String> {
+    fn call(&self, cx: &Ctx, method: &str, args: Value) -> Result<Value, String> {
         match method {
+            // a card was switched on or off: read again now rather than at the next log change
+            "poke" => {
+                if let Some(tx) = self.run.lock().unwrap().as_ref().and_then(|r| r.tx.clone()) {
+                    let _ = tx.send(());
+                }
+                Ok(Value::Null)
+            }
+            // Weekly pacing: the page hands over the account's weekly reading; the cycle's readings are kept
+            // in the feature's data folder and sent back.
+            "sample" => {
+                let (id, pct, resets) = (args["id"].as_str().unwrap_or(""), args["pct"].as_f64().unwrap_or(-1.0), args["resets"].as_i64().unwrap_or(0));
+                if id.is_empty() || !(0.0..=100.0).contains(&pct) || resets <= 0 {
+                    return Err("bad reading".into());
+                }
+                let file = cx.data_dir("agent-usage").join("pace.json");
+                let mut all: std::collections::HashMap<String, Cycle> = json_load(&file);
+                let c = all.entry(id.to_string()).or_default();
+                // the reset time wobbles by seconds; a different week starts a new line
+                if (c.resets - resets).abs() > 6 * 3_600_000 {
+                    *c = Cycle { resets, pts: vec![] };
+                }
+                c.resets = resets;
+                let now = args["at"].as_i64().filter(|t| *t > 0).map_or_else(now_ms, |t| t.min(now_ms()));
+                if c.pts.last().is_none_or(|l| now > l.0 && (l.1 != pct || now - l.0 > 1_800_000)) {
+                    c.pts.push((now, pct));
+                    if c.pts.len() > 500 {
+                        c.pts.remove(0);
+                    }
+                    let _ = json_save_atomic(&file, &all);
+                }
+                Ok(json!(all[id].pts))
+            }
             "state" => {
                 let run = self.run.lock().unwrap().as_ref().map(|r| (r.store.clone(), r.ready.load(Ordering::SeqCst)));
                 // Still reading for the first time: the `usage` event brings the totals when they are whole.
@@ -159,6 +194,13 @@ impl Feature for AgentUsage {
     fn strings(&self) -> &'static str {
         include_str!("../../../src/features/agent-usage/strings.json")
     }
+}
+
+/// One weekly quota cycle's readings: (time ms, used percent).
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Cycle {
+    resets: i64,
+    pts: Vec<(i64, f64)>,
 }
 
 pub fn feature() -> Arc<dyn Feature> {

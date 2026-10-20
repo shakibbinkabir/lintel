@@ -48,6 +48,37 @@ pub fn custom_sound(name: String) -> Result<tauri::ipc::Response, String> {
     std::fs::read(&path).map(tauri::ipc::Response::new).map_err(|e| e.to_string())
 }
 
+/// Settings → Sounds → Choose file: the page sends the bytes of the picked file (raw body) with
+/// the sound `name` and the file's extension; it replaces any file the sound had.
+#[tauri::command]
+pub fn set_custom_sound(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else { return Err("no file".into()) };
+    let head = |k: &str| request.headers().get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    let (name, ext) = (head("name"), head("ext"));
+    if !valid_name(&name) || !EXTENSIONS.contains(&ext.as_str()) {
+        return Err("not a usable sound".into());
+    }
+    if bytes.is_empty() || bytes.len() as u64 > MAX_BYTES {
+        return Err("the file is empty or over 8 MB".into());
+    }
+    let dir = folder();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    reset_custom_sound(name.clone());
+    std::fs::write(dir.join(format!("{name}.{ext}")), bytes).map_err(|e| e.to_string())
+}
+
+/// Settings → Sounds → Reset: removes the user's file for `name`; the built-in sound returns.
+#[tauri::command]
+pub fn reset_custom_sound(name: String) {
+    if !valid_name(&name) {
+        return;
+    }
+    let dir = folder();
+    for ext in EXTENSIONS {
+        let _ = std::fs::remove_file(dir.join(format!("{name}.{ext}")));
+    }
+}
+
 /// Settings → Open sounds folder: creates it if needed and shows it.
 #[tauri::command]
 pub fn reveal_sounds_folder() {

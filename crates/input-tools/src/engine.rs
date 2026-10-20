@@ -62,6 +62,9 @@ pub struct Config {
     pub click_ms: u32,
     pub invert_vertical: bool,
     pub invert_horizontal: bool,
+    /// The same for a touchpad (small steps), apart from the mouse wheel.
+    pub pad_vertical: bool,
+    pub pad_horizontal: bool,
     /// The one modifier (a bit of `keys`) that turns the wheel sideways while held.
     pub sideways: Option<u8>,
     /// Program names in lower case (`chrome.exe`), as every list of apps here.
@@ -708,13 +711,14 @@ fn wheel(shared: &Shared, m: &Mouse) -> Verdict {
         _ => return Pass,
     };
     let cfg = shared.config();
-    // A touchpad scrolls in small steps and a wheel in whole notches of 120: the touchpad is left alone.
-    // debt: tell the touchpad by Raw Input; a free-spinning wheel that sends part notches is left alone too.
-    if foreign(&cfg, m.injected) || m.delta == 0 || m.delta % 120 != 0 {
+    // A touchpad scrolls in small steps and a wheel in whole notches of 120.
+    // debt: tell the touchpad by Raw Input; a free-spinning wheel that sends part notches counts as a touchpad too.
+    if foreign(&cfg, m.injected) || m.delta == 0 {
         return Pass;
     }
+    let pad = m.delta % 120 != 0;
     let mods = keys::held();
-    let sideways = !horizontal && cfg.sideways == Some(mods);
+    let sideways = !pad && !horizontal && cfg.sideways == Some(mods);
     // Ctrl with the wheel is zoom, and stays as Windows has it.
     if !sideways && mods & keys::CTRL != 0 {
         return Pass;
@@ -722,7 +726,12 @@ fn wheel(shared: &Shared, m: &Mouse) -> Verdict {
     let delta = if sideways {
         // Away from the user is to the left, as Shift with the wheel is in a browser; then the sideways switch.
         if cfg.invert_horizontal { m.delta } else { -m.delta }
-    } else if if horizontal { cfg.invert_horizontal } else { cfg.invert_vertical } {
+    } else if match (pad, horizontal) {
+        (false, false) => cfg.invert_vertical,
+        (false, true) => cfg.invert_horizontal,
+        (true, false) => cfg.pad_vertical,
+        (true, true) => cfg.pad_horizontal,
+    } {
         -m.delta
     } else {
         return Pass;
@@ -899,7 +908,7 @@ impl Engine {
         set(&mut subs.snippets, cfg.snippets.iter().any(|s| s.on), || (key(40, true, snippets), mouse(15, false, click_resets)));
         set(&mut subs.click_debounce, cfg.click_debounce, || mouse(10, false, click_debounce));
         set(&mut subs.buttons, cfg.buttons.iter().any(|b| !b.is_empty()), || mouse(30, true, buttons));
-        set(&mut subs.wheel, cfg.invert_vertical || cfg.invert_horizontal || cfg.sideways.is_some(), || mouse(40, true, wheel));
+        set(&mut subs.wheel, cfg.invert_vertical || cfg.invert_horizontal || cfg.pad_vertical || cfg.pad_horizontal || cfg.sideways.is_some(), || mouse(40, true, wheel));
         if subs.remap.is_none() {
             release_all(&self.shared);
         }

@@ -1,5 +1,11 @@
 {
   "strings": {
+    "Command or script": {
+      "en": "Command or script"
+    },
+    "Command line or script path, run when you pick the slice": {
+      "en": "Command line or script path, run when you pick the slice"
+    },
     "Radial menu": {
       "en": "Radial menu",
       "zh-Hans": "径向菜单",

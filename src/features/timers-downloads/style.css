@@ -14,3 +14,6 @@
 .f-timers-downloads-page .meter { width: 60%; }
 .f-timers-downloads-hint { margin: 0; font: 400 var(--t-sm) var(--font); color: var(--dim); text-align: center; }
 .f-timers-downloads-laps { display: flex; gap: var(--s-3); max-width: 90%; overflow: hidden; font: 400 var(--t-xs) var(--font); color: var(--dim); font-variant-numeric: tabular-nums; }
+
+.f-timers-downloads-power { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; }
+.f-timers-downloads-power input[type="time"] { background: var(--field, rgba(255,255,255,.08)); color: inherit; border: 0; border-radius: 8px; padding: 4px 6px; font: inherit; }

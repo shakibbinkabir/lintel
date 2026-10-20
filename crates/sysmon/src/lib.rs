@@ -66,6 +66,8 @@ struct St {
     ticks: Option<svc_sysmon::Sub>,
     /// The section is on screen: every metric, and word of a device plugged in.
     watch: Option<(svc_sysmon::Guard, svc_sysevents::Sub)>,
+    /// The mascot is on screen: CPU, memory and power are read for its mood.
+    mood: Option<svc_sysmon::Guard>,
     /// With it: the hardware helper reads too, if one runs (the feature `hw-helper`).
     hw: Option<svc_hw::Sub>,
     /// The card whose page is open, when it lists processes: "cpu", "mem" or "gpu".
@@ -173,10 +175,19 @@ fn top(key: &str, snap: &Snapshot) -> Vec<Row> {
 impl Inner {
     /// On the sampler's thread, after every reading.
     fn tick(&self, cx: &Ctx, snap: &Snapshot) {
-        let (watching, detail) = {
+        let (watching, detail, mood) = {
             let st = self.st.lock().unwrap();
-            (st.watch.is_some(), st.detail.clone())
+            (st.watch.is_some(), st.detail.clone(), st.mood.is_some())
         };
+        if mood {
+            let pct = snap.power.as_ref().and_then(|p| p.percent);
+            cx.emit(ID, "mood", json!({
+                "cpu": snap.cpu,
+                "pressure": snap.mem.as_ref().map(|m| m.pressure),
+                "battery": snap.power.as_ref().filter(|p| p.battery && !p.ac).and(pct),
+                "temp": snap.temps.iter().map(|t| t.celsius).reduce(f32::max),
+            }));
+        }
         if watching {
             let mut said = json!({ "snap": snap });
             if !detail.is_empty() {
@@ -362,6 +373,15 @@ impl Feature for Sysmon {
         let inner = &self.inner;
         match method {
             "watch" => Ok(inner.watch(cx, args["on"].as_bool().unwrap_or(false), args["detail"].as_str().unwrap_or_default())),
+            "mood" => {
+                let on = args["on"].as_bool().unwrap_or(false);
+                let mut st = inner.st.lock().unwrap();
+                let guard = (on && st.on).then(|| svc_sysmon::need(&[Metric::Cpu, Metric::Memory, Metric::Power, Metric::Temps]));
+                let old = std::mem::replace(&mut st.mood, guard);
+                drop(st);
+                drop(old);
+                Ok(Value::Null)
+            }
             "procs" => Ok(json!(procs::processes(Duration::from_secs(1)))),
             // Only ever from a click on a confirmation that names the process.
             "kill" => Ok(inner.kill(&args)),

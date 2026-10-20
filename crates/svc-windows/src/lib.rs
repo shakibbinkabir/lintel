@@ -16,6 +16,7 @@ use windows::core::{Interface, BOOL, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, PROPERTYKEY, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_ANY};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -361,4 +362,46 @@ pub fn is_onscreen_keyboard_point(x: i32, y: i32) -> bool {
         }
         false
     }
+}
+
+// ── Virtual desktops ──────────────────────────────────────────────────────────
+
+/// The virtual desktops, left to right: the name the user gave each (None while
+/// it still has the default one) and the index of the one in front. Read from
+/// the registry on the call (Explorer keeps it there), so nothing watches it.
+/// One desktop with no name when Explorer has not written the list yet.
+pub fn desktops() -> (Vec<Option<String>>, usize) {
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
+    fn read(sub: &str, value: &str) -> Option<Vec<u8>> {
+        let (sub, value): (Vec<u16>, Vec<u16>) = (sub.encode_utf16().chain([0]).collect(), value.encode_utf16().chain([0]).collect());
+        let (sub, value) = (windows::core::PCWSTR(sub.as_ptr()), windows::core::PCWSTR(value.as_ptr()));
+        let mut len = 0u32;
+        unsafe {
+            RegGetValueW(HKEY_CURRENT_USER, sub, value, RRF_RT_ANY, None, None, Some(&mut len)).ok().ok()?;
+            let mut buf = vec![0u8; len as usize];
+            RegGetValueW(HKEY_CURRENT_USER, sub, value, RRF_RT_ANY, None, Some(buf.as_mut_ptr() as *mut _), Some(&mut len)).ok().ok()?;
+            buf.truncate(len as usize);
+            Some(buf)
+        }
+    }
+    // A GUID in memory order (three little-endian numbers, then 8 bytes) as the registry spells it.
+    let guid = |b: &[u8]| {
+        let n = |r: std::ops::Range<usize>| b[r].iter().rev().fold(String::new(), |s, x| s + &format!("{x:02X}"));
+        format!("{{{}-{}-{}-{}-{}}}", n(0..4), n(4..6), n(6..8), b[8..10].iter().map(|x| format!("{x:02X}")).collect::<String>(), b[10..16].iter().map(|x| format!("{x:02X}")).collect::<String>())
+    };
+    let ids: Vec<String> = read(KEY, "VirtualDesktopIDs").map(|b| b.chunks_exact(16).map(guid).collect()).unwrap_or_default();
+    if ids.is_empty() {
+        return (vec![None], 0);
+    }
+    let now = read(KEY, "CurrentVirtualDesktop").filter(|b| b.len() >= 16).map(|b| guid(&b));
+    let at = now.and_then(|g| ids.iter().position(|i| *i == g)).unwrap_or(0);
+    let names = ids
+        .iter()
+        .map(|id| {
+            let b = read(&format!(r"{KEY}\Desktops\{id}"), "Name")?;
+            let w: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|c| *c != 0).collect();
+            Some(String::from_utf16_lossy(&w)).filter(|n| !n.is_empty())
+        })
+        .collect();
+    (names, at)
 }

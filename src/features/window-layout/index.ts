@@ -56,6 +56,7 @@ const CENTER = { id: "center", name: N_("Center"), icon: glyph([3.5, 8.5, 3, 9])
 const PREVIOUS = { id: "previous-display", name: N_("Previous display"), icon: `${SCREEN}M16 12H8M11 9l-3 3 3 3` };
 const NEXT = { id: "next-display", name: N_("Next display"), icon: `${SCREEN}M8 12h8M13 9l3 3-3 3` };
 const RESTORE = { id: "restore", name: N_("Put back"), icon: "replay" };
+const PIN = { id: "pin", name: N_("Keep on top"), icon: "pin" };
 
 /** What a placement that did not happen says. One that did says nothing: the window shows it. */
 const SAID: Record<string, string> = {
@@ -63,7 +64,11 @@ const SAID: Record<string, string> = {
   "nothing-to-restore": N_("Nothing to put back"),
   "one-display": N_("Only one display"),
   failed: N_("Window not moved"),
+  pinned: N_("Kept above the other windows"),
+  unpinned: N_("Let go"),
 };
+/** A result that is good news, not a refusal. */
+const GOOD = ["pinned", "unpinned"];
 
 // ── The section ───────────────────────────────────────────────────────────────
 
@@ -80,11 +85,61 @@ function section(cx: FeatureCtx): SectionHost {
   void cx.call<Tile[]>("tiles").then((list) => {
     const tiles = (list ?? []).map((x) => ({ id: x.id, name: x.name, icon: glyph(x.share) }));
     // Halves and the sizes of the whole screen, corners and thirds, then the rest.
-    const all = [...tiles.slice(0, 4), MAXIMIZE, ALMOST, CENTER, ...tiles.slice(4), PREVIOUS, NEXT, RESTORE];
+    const all = [...tiles.slice(0, 4), MAXIMIZE, ALMOST, CENTER, ...tiles.slice(4), PREVIOUS, NEXT, RESTORE, PIN];
     grid.replaceChildren(...all.map((a) => tile(a.icon, t(a.name), () => run(a.id))));
   });
   hint();
   return { el: h("div", { class: `${P}page` }, grid, said), show: hint, hide() {}, sync() {} };
+}
+
+// ── The virtual desktops ──────────────────────────────────────────────────────
+
+interface Desktops {
+  names: (string | null)[];
+  current: number;
+  on: boolean;
+}
+
+/** The strip of virtual desktops: click one, or the arrows, to go there. Off until it is turned on here. */
+function desktops(cx: FeatureCtx): SectionHost {
+  const t = cx.t;
+  const strip = h("div", { class: `${P}desks` });
+  const el = h("div", { class: `${P}page` }, strip);
+  let state: Desktops | null = null;
+  const go = (to: number) => {
+    if (state && to >= 0 && to < state.names.length && to !== state.current) void cx.call("desktop", { to });
+  };
+  const draw = () => {
+    if (!state) return;
+    const d = state;
+    if (!d.on) {
+      strip.replaceChildren(
+        h("span", { class: `${P}note`, text: t("Shows the virtual desktops of Windows by name, to switch between them.") }),
+        btn(t("Turn on"), "primary", () => void cx.settings.patch({ desktopStrip: true }).then(() => void load())),
+      );
+      return;
+    }
+    strip.replaceChildren(
+      ...d.names.map((name, i) => btn(name ?? t("Desktop {n}", { n: i + 1 }), i === d.current ? "primary" : "secondary", () => go(i))),
+    );
+  };
+  const load = () => cx.call<Desktops>("desktops").then((d) => ((state = d), draw()));
+  const key = (e: KeyboardEvent) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") go((state?.current ?? 0) + (e.key === "ArrowLeft" ? -1 : 1));
+  };
+  // The registry is read when the section is shown and after a switch, never in between.
+  cx.on("desktop", () => void load());
+  return {
+    el,
+    show() {
+      window.addEventListener("keydown", key);
+      void load();
+    },
+    hide() {
+      window.removeEventListener("keydown", key);
+    },
+    sync() {},
+  };
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
@@ -134,6 +189,7 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
     return h("label", { class: `field ${P}pick` }, select);
   };
   const gap = (key: string) => pick(key, GAPS.map((px) => [px, px === 0 ? t("None") : t("{px} px", { px })]));
+  const edgeGap = (key: string) => pick(key, [[-1, t("Same as the screen gap")], ...GAPS.map((px): [number, string] => [px, px === 0 ? t("None") : t("{px} px", { px })])]);
   /** A guarded shortcut: its keys and its switch. */
   const guarded = (chord: string, key: string) => h("span", { class: `${P}ctl` }, keysOf(chord), sw(key));
 
@@ -200,6 +256,10 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
         ),
         row(t("Gap between windows"), gap("windowGap")),
         row(t("Gap at the edges of the screen"), gap("screenGap")),
+        row(t("Left edge gap"), edgeGap("screenGapLeft")),
+        row(t("Top edge gap"), edgeGap("screenGapTop")),
+        row(t("Right edge gap"), edgeGap("screenGapRight")),
+        row(t("Bottom edge gap"), edgeGap("screenGapBottom")),
         row(t("Margin of Almost maximize, in percent"), num("margin", 0, 25), t("0 to 25, on every side.")),
         h(
           "div",
@@ -209,6 +269,28 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
           appList("ignoredApps"),
         ),
       ]),
+
+      h("div", { class: "section-title", text: t("Dragging") }),
+      card([
+        row(
+          t("Snap a window dragged by its title bar"),
+          sw("edgeSnap"),
+          t("Let go at a screen edge for a half, at a corner for a quarter, at the top for the whole screen. A window Lintel placed gets its old size back when you drag it away."),
+        ),
+        row(
+          t("Move a window by dragging it from anywhere"),
+          pick("dragModifier", [["off", t("Off")], ["alt", "Alt"], ["ctrl-alt", "Ctrl+Alt"], ["shift-alt", "Shift+Alt"]], change),
+          t("Hold these keys and drag. It snaps like the title bar does. The click is not passed on to the app."),
+        ),
+        row(
+          t("Hold for columns while dragging"),
+          pick("zoneKey", [["off", t("Off")], ["shift", "Shift"], ["ctrl", "Ctrl"], ["alt", "Alt"]]),
+          t("The display is split in two columns, three on an ultrawide, and letting go places the window in the column under the pointer."),
+        ),
+      ]),
+
+      h("div", { class: "section-title", text: t("Virtual desktops") }),
+      card([row(t("Show the desktops in the island"), sw("desktopStrip"), t("A section that lists the virtual desktops by the names given in Windows. It reads them only when it is shown."))]),
 
       h("div", { class: "section-title", text: t("Pointer") }),
       card([
@@ -249,12 +331,15 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
 
 export default defineFeature({
   id: "window-layout",
-  sections: [{ id: "layout", title: "Layout", icon: LAYOUT, letter: "l", height: 320, build: section }],
+  sections: [
+    { id: "layout", title: "Layout", icon: LAYOUT, letter: "l", height: 320, build: section },
+    { id: "desktops", title: "Desktops", icon: "grid", height: 160, keys: ["ArrowLeft", "ArrowRight"], build: desktops },
+  ],
   settings: settingsBody,
   start: (cx) => {
     // A shortcut's placement that did not happen (a tile's is said in the section).
     const offResult = cx.on<Result>("result", (r) => {
-      if (SAID[r.result]) cx.island.notice({ kind: "notification", title: cx.t(SAID[r.result]), icon: LAYOUT, tone: "warn", section: "layout" });
+      if (SAID[r.result]) cx.island.notice({ kind: "notification", title: cx.t(SAID[r.result]), icon: LAYOUT, tone: GOOD.includes(r.result) ? "ok" : "warn", section: "layout" });
     });
     // A guarded shortcut was held back: what confirms it.
     const offGuard = cx.on<{ state: string; keys: string; hold: boolean }>("guard", (g) => {

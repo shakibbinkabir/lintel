@@ -68,7 +68,7 @@ fn snapshot() -> Value {
         "track": svc_media::state().as_ref().map(track),
         "sources": svc_media::sources()
             .iter()
-            .map(|s| json!({ "aumid": s.aumid, "name": s.name, "playing": s.playing }))
+            .map(|s| json!({ "aumid": s.aumid, "name": s.name, "title": s.title, "playing": s.playing }))
             .collect::<Vec<_>>(),
         "picked": svc_media::picked(),
     })

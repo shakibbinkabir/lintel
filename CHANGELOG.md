@@ -4,6 +4,52 @@ All notable changes to Lintel are written in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-20
+
+A large release: about ninety additions and fixes, many of them ideas from the projects Lintel grew from, rebuilt for Windows. New options are off until you turn them on.
+
+### Coding agents
+
+- Plan approval cards for Claude Code: the plan's title, then Auto mode, Manual or Change plan. Approving a plan now really lets Claude Code go ahead.
+- A card answered in the terminal leaves the island at once.
+- "Open terminal" finds the session's window for every session, including PowerShell under Windows Terminal, and falls back more reliably when Windows refuses to bring it forward.
+- Sessions already running when Lintel starts get their pills straight away. A pill is named after the session's /rename title or its folder, or Claude Code's terminal title, and a second Claude profile gets its own pill.
+- Quiet when it should be: no sound or reveal when a turn finishes in the terminal you are looking at, and optional quiet while the microphone or camera is in use. Optionally, another session's finish shows its card for a moment.
+- Claude Code inside WSL and on SSH hosts: hooks installed after you see the change, events back to the island, Allow and Deny from the island.
+- More agents: Cursor shell commands, Kiro CLI, Antigravity with exact one-command grants, OpenCode 1 and 2 (questions and permissions as cards), Codex patches as per-file diffs, JetBrains terminals.
+- Background runs (scripts, `claude -p`) no longer make pills. Hooks follow `CLAUDE_CONFIG_DIR`. Slash commands show as typed.
+- A small code view for a session (the lines just changed, the last command, Follow edits), and an optional agents and plan-limits line on the resting strip.
+- The GitHub card shows a session's `git push` as it happens and the CI of the session's branch; GitLab and Gitea can sit beside GitHub.
+- Usage: one card per Claude profile, OpenCode and Muse readers, and a weekly pace line with a daily allowance.
+
+### The island and the mascot
+
+- Notifications from other apps (WhatsApp, Telegram, Teams, Mail and others) can show in the island: Lintel reads them as they pop up, with no signing needed. Off by default; nothing leaves the PC.
+- Updates from the island: after you agree once, Lintel checks GitHub for new versions, and Update now downloads the installer from GitHub, checks it against GitHub's SHA-256 and installs it.
+- A watchdog restarts Lintel after a crash (never after you quit).
+- The island stays out of Alt+Tab, stays painted after a lock, fits displays with different scaling, and drops onto a hidden island finish. The autostart entry follows the app when it moves.
+- Any number of service pills, a Linear inbox pill, your own sound files, and a louder volume range.
+- The mascot falls asleep when things are quiet and reacts to a busy, hot or tired PC.
+
+### Chat
+
+- Formulas drawn as math, code cards for dropped files, a screenshot from the mascot by Ctrl+drag, today's agenda on request.
+- A Claude gateway address, a choice when a model cannot take pictures, and tools from MCP servers you already set up in other apps (each call asks first).
+
+### Tools
+
+- Window layout: pin any window on top, drag a window from anywhere with a modifier, snapping to edges and zones with per-edge gaps, and a strip of your named virtual desktops.
+- Screenshots: Copy text from a capture, zoom and drag-out for pinned captures, and in the editor a spotlight, a magnifier, a ruler, curved arrows, filled shapes, extra space around a picture and pasted images.
+- Cleaner: a disk map and a duplicate finder (only the copies you tick go to the Recycle Bin).
+- A small bar beside text you select in any app: copy, clean a link, change case, keep it on the shelf.
+- Sleep or shut down after a time (shutdown always asks first), keep awake while agents work, brightness keys that move every display, a separate touchpad scroll direction, and a radial slice that runs a command.
+- Mixer: the mouse wheel moves a fader, the headphone guard can go to silence, and media from several browser tabs can be switched one by one.
+- Calendar event notes, every Bluetooth accessory with its battery, Save as MP3, checkboxes in the scratchpad, and a shelf that folds the island when you drag an item out.
+
+### Changed
+
+- Releases are still not code-signed: the free signing program for open-source projects declined the project for now. A Microsoft Store version, signed by Microsoft, is being prepared.
+
 ## [1.0.1] - 2026-10-19
 
 ### Fixed

@@ -14,7 +14,7 @@ import { btn, card, meter, row, setMeter, toggle } from "../../ui/components";
 import { icon } from "../../ui/icons";
 import { clear, h } from "../../views/dom";
 
-type Tool = "compress" | "gif" | "images" | "text";
+type Tool = "compress" | "gif" | "audio" | "images" | "text";
 type Settings = Record<string, unknown>;
 
 interface Info {
@@ -35,6 +35,7 @@ interface Done {
 }
 
 const VIDEO = /\.(mp4|mov|m4v|wmv|avi|mkv|webm|mpe?g|3gp)$/i;
+const AUDIO = /\.(mp3|m4a|wav|wma|aac|flac)$/i;
 const name = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 const bytes = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
@@ -77,6 +78,7 @@ function build(cx: FeatureCtx): SectionHost {
   const tools: [Tool, string, string][] = [
     ["compress", t("Compress"), "record"],
     ["gif", t("GIF"), "image"],
+    ["audio", t("MP3"), "music"],
     ["images", t("Pictures"), "shot"],
     ["text", t("Text"), "text"],
   ];
@@ -118,6 +120,7 @@ function build(cx: FeatureCtx): SectionHost {
         ...trimmed,
       );
     }
+    if (tool === "audio") return h("div", { class: "f-media-tools-opts" }, ...trimmed);
     if (tool === "images") {
       const wm = h("input", { type: "text", placeholder: t("Watermark text"), value: String(s.wmText ?? ""), spellcheck: "false" });
       wm.addEventListener("change", () => {
@@ -169,7 +172,7 @@ function build(cx: FeatureCtx): SectionHost {
     const names = h("div", { class: "f-media-tools-files" }, ...(files.length ? [icon(tool === "images" || tool === "text" ? "image" : "record", 16), h("span", { text: summary() })] : [icon("drop", 16), h("span", { text: t("Drop files here, or choose them") })]));
     const out = tool === "text" && text !== "" ? h("div", { class: "f-media-tools-text", text }) : null;
     status.textContent = note;
-    go = btn(busy ? t("Cancel") : tool === "compress" ? t("Compress") : tool === "gif" ? t("Make GIF") : tool === "images" ? t("Convert") : t("Read text"), busy ? "secondary" : "primary", () => (busy ? void cx.call("cancel") : void run()));
+    go = btn(busy ? t("Cancel") : tool === "compress" ? t("Compress") : tool === "gif" ? t("Make GIF") : tool === "audio" ? t("Save as MP3") : tool === "images" ? t("Convert") : t("Read text"), busy ? "secondary" : "primary", () => (busy ? void cx.call("cancel") : void run()));
     go.disabled = !busy && (!files.length || (tool === "text" && !ocr));
     const copy = out ? btn(t("Copy"), "secondary", () => void navigator.clipboard?.writeText(text).then(() => ((note = t("Copied")), (status.textContent = note)))) : null;
     el.append(row1, names, out ?? options(), h("div", { class: "isl-row" }, busy ? bar : null, status, h("span", { class: "isl-gap" }), copy, go));
@@ -182,7 +185,10 @@ function build(cx: FeatureCtx): SectionHost {
     text = "";
     // The tool follows what was given, unless it already fits: video for the first two, pictures otherwise.
     const video = files.every((f) => VIDEO.test(f));
+    const sound = files.every((f) => VIDEO.test(f) || AUDIO.test(f));
     if (video && (tool === "images" || tool === "text")) tool = "compress";
+    if (sound && !video) tool = "audio";
+    if (!sound && (tool === "compress" || tool === "gif" || tool === "audio")) tool = "images";
     if (!video && (tool === "compress" || tool === "gif")) tool = "images";
     paint();
     if (files.length === 1) {

@@ -15,11 +15,11 @@ import { btn, card, field, iconBtn, meter, row, setMeter, tab, toggle } from "..
 
 const P = "f-cleaner-uninstaller-";
 
-type Kind = "caches" | "dev" | "downloads" | "screenshots" | "backups" | "leftovers";
+type Kind = "caches" | "dev" | "downloads" | "screenshots" | "backups" | "leftovers" | "duplicates";
 interface Row { id: number; kind: Kind; title: string; name: string | null; place: string; bytes: number; count: number; checked: boolean; note: "" | "running" | "left"; modified: number | null }
 interface Done { moved: number; left: number; bytes: number; why: string[] }
 interface Un { key: string; name: string; phase: "running" | "waiting" | "gone" | "still" | "failed"; message: string; winget: string | null }
-interface Live { phase: "idle" | "scanning" | "cleaning"; scanning: string; rows: Row[]; left: Row[]; done: Done | null; progress: [number, number]; bin: [number, number] | null; scannedAt: number | null; un: Un | null; tab: string }
+interface Live { phase: "idle" | "scanning" | "cleaning" | "dupes"; scanning: string; rows: Row[]; left: Row[]; dupes: Row[][]; dupesAt: number | null; done: Done | null; progress: [number, number]; bin: [number, number] | null; scannedAt: number | null; un: Un | null; tab: string }
 interface App { key: string; name: string; version: string; publisher: string; store: boolean; cmd: string | null; winget: string | null }
 interface Entry { name: string; command: string; place: "user" | "machine" | "folder"; missing: boolean }
 interface Lane {
@@ -336,6 +336,269 @@ function cleanView(cx: FeatureCtx, the: Lane, compact: boolean) {
   return { el, draw };
 }
 
+// ── Duplicates ───────────────────────────────────────────────────────────────
+
+function dupesView(cx: FeatureCtx, the: Lane) {
+  const head = h("div", { class: `${P}head` });
+  const list = rowList(cx, paintHead);
+  const el = h("div", { class: `${P}view` }, head, list.el);
+  let listed = "";
+  let progress = "";
+  cx.on<[string, number, number]>("dupesProgress", ([stage, n, of]) => {
+    progress = stage === "reading" ? cx.t("Reading your folders…") : cx.t("Comparing {done} of {total}", { done: n, total: of });
+    paintHead();
+  });
+
+  /** Every group keeps one copy: all but the first are ticked, and the user sees each tick. */
+  const extras = () => {
+    for (const g of live?.dupes ?? []) g.forEach((r, i) => ticks.set(r.id, i > 0));
+    listed = "";
+    draw();
+  };
+
+  function paintHead() {
+    const s = live;
+    if (!s) return;
+    const picked = s.dupes.flat().filter(ticked);
+    const finding = s.phase === "dupes";
+    const spare = s.dupes.reduce((a, g) => a + sum(g) - Math.max(...g.map((r) => r.bytes)), 0);
+    const all = s.dupes.some((g) => g.every(ticked));
+    const title = finding ? progress || cx.t("Looking for copies…")
+      : s.dupesAt == null ? cx.t("Not searched yet")
+      : s.dupes.length ? tn("{n} file has copies", "{n} files have copies", s.dupes.length, { n: s.dupes.length })
+      : cx.t("No copies found");
+    const detail = finding ? cx.t("Files are compared by size, then by their contents. Nothing is removed.")
+      : s.dupesAt == null ? cx.t("Looks in Documents, Downloads, Desktop, Pictures and Videos, at files over 256 KB.")
+      : s.dupes.length ? (all ? cx.t("Keep at least one copy of every file.") : cx.t("{size} could be freed · {ticked} ticked", { size: sizeText(cx, spare), ticked: sizeText(cx, sum(picked)) }))
+      : cx.t("Searched {when}", { when: ago(s.dupesAt) });
+    const find = finding ? btn(cx.t("Stop"), "ghost", () => void cx.call("cancel")) : btn(cx.t("Find copies"), "secondary", () => void cx.call("dupes"));
+    find.disabled = s.phase !== "idle" && !finding;
+    const tick = btn(cx.t("Tick the extra copies"), "ghost", extras);
+    tick.disabled = s.phase !== "idle" || !s.dupes.length;
+    const clean = btn(cx.t("Clean…"), "primary", () => the.ask(picked));
+    clean.disabled = s.phase !== "idle" || !picked.length || all;
+    head.replaceChildren(h("div", { class: `${P}status` }, h("b", { text: title }), h("small", { text: detail })), find, tick, clean);
+  }
+
+  function draw() {
+    const s = live;
+    if (!s) return;
+    paintHead();
+    const now = JSON.stringify(s.dupes.map((g) => g.map((r) => [r.id, r.note])));
+    if (now === listed) return;
+    listed = now;
+    list.draw(s.dupes.map((g): [string, Row[]] => [
+      `${tn("{n} copy", "{n} copies", g.length, { n: g.length })} · ${sizeText(cx, g[0].bytes)} ${cx.t("each")}`,
+      g,
+    ]));
+  }
+
+  return { el, draw };
+}
+
+// ── Disk ─────────────────────────────────────────────────────────────────────
+
+interface DNode { n: string; d: boolean; b: number; p: number | null; k: number[]; path: string }
+interface DState { phase: "idle" | "scanning"; root: string; nodes: DNode[]; at: number | null }
+interface Arc { id: number; a0: number; a1: number; r0: number; r1: number }
+
+const TAU = Math.PI * 2;
+
+/** A drive or a folder as rings: the folder in the middle, what is in it around it. Click a part to zoom in, the middle to go back. It only reads. */
+function diskView(cx: FeatureCtx) {
+  let st: DState | null = null;
+  let reading = "";
+  let focus = 0;
+  let hover = -1;
+  let arcs: Arc[] = [];
+  const canvas = h("canvas", { class: `${P}sun` }) as HTMLCanvasElement;
+  const info = h("div", { class: `${P}status` });
+  const bar = h("div", { class: `${P}head` });
+  const el = h("div", { class: `${P}view` }, bar, canvas, h("div", { class: `${P}head` }, info));
+  const path = field({ placeholder: cx.t("A folder, such as C:\\Users"), onInput: () => {} });
+  const RINGS = 4;
+
+  function paintBar() {
+    const scanning = st?.phase === "scanning";
+    const go = (root: string) => () => void cx.call("diskScan", { root });
+    const kids: HTMLElement[] = [path];
+    const scan = btn(cx.t("Scan folder"), "secondary", () => path.input.value.trim() && go(path.input.value.trim())());
+    scan.disabled = scanning;
+    kids.push(scan);
+    if (scanning) kids.push(btn(cx.t("Stop"), "ghost", () => void cx.call("diskCancel")));
+    bar.replaceChildren(...kids, ...drives.map((d) => small(btn(d, "ghost", go(d)))), ...(home ? [small(btn(cx.t("Home"), "ghost", go(home)))] : []));
+  }
+  let drives: string[] = [];
+  let home = "";
+  void cx.call<{ drives: string[]; home: string }>("diskDrives").then((r) => {
+    drives = r?.drives ?? [];
+    home = r?.home ?? "";
+    paintBar();
+  });
+
+  const color = (nodes: DNode[], id: number, level: number) => {
+    // The hue follows the part of the root the node lies in; deeper rings are lighter; files are paler.
+    let top = id;
+    while (nodes[top].p !== null && nodes[top].p !== focus && nodes[top].p !== 0) top = nodes[top].p!;
+    const hue = (nodes[focus].k.indexOf(top) * 47 + 20) % 360;
+    return `hsl(${hue} ${nodes[id].d ? 55 : 25}% ${38 + level * 7}%)`;
+  };
+
+  function draw() {
+    const ratio = window.devicePixelRatio || 1;
+    const box = canvas.getBoundingClientRect();
+    const size = Math.max(160, Math.min(box.width, box.height));
+    canvas.width = Math.round(box.width * ratio);
+    canvas.height = Math.round(box.height * ratio);
+    const g = canvas.getContext("2d")!;
+    g.setTransform(ratio, 0, 0, ratio, 0, 0);
+    g.clearRect(0, 0, box.width, box.height);
+    arcs = [];
+    const nodes = st?.nodes ?? [];
+    const ink = getComputedStyle(canvas).getPropertyValue("--ink").trim() || "#ddd";
+    if (!nodes.length) {
+      g.fillStyle = ink;
+      g.globalAlpha = 0.6;
+      g.textAlign = "center";
+      g.font = "13px sans-serif";
+      const text = st?.phase === "scanning" ? `${cx.t("Reading")} ${reading}` : cx.t("Pick a drive or type a folder. Only sizes are read.");
+      g.fillText(text.length > 70 ? `${text.slice(0, 69)}…` : text, box.width / 2, box.height / 2);
+      return;
+    }
+    const cxn = box.width / 2;
+    const cyn = box.height / 2;
+    const hole = size * 0.13;
+    const ring = (size / 2 - 4 - hole) / RINGS;
+    const root = nodes[focus];
+    const walk = (id: number, a0: number, level: number) => {
+      let a = a0;
+      for (const k of nodes[id].k) {
+        const span = (nodes[k].b / root.b) * TAU;
+        if (span < 0.004) continue;
+        const r0 = hole + (level - 1) * ring;
+        arcs.push({ id: k, a0: a, a1: a + span, r0, r1: r0 + ring });
+        if (level < RINGS) walk(k, a, level + 1);
+        a += span;
+      }
+    };
+    if (root.b > 0) walk(focus, -Math.PI / 2, 1);
+    for (const arc of arcs) {
+      const level = Math.round((arc.r0 - hole) / ring) + 1;
+      g.beginPath();
+      g.arc(cxn, cyn, arc.r1 - 1, arc.a0, arc.a1);
+      g.arc(cxn, cyn, arc.r0, arc.a1, arc.a0, true);
+      g.closePath();
+      g.fillStyle = color(nodes, arc.id, level);
+      g.globalAlpha = hover === arc.id ? 1 : 0.85;
+      g.fill();
+      g.globalAlpha = 1;
+      g.strokeStyle = "rgba(0,0,0,.35)";
+      g.lineWidth = 0.75;
+      g.stroke();
+    }
+    g.fillStyle = ink;
+    g.textAlign = "center";
+    g.font = "600 12px sans-serif";
+    g.fillText(root.n.length > 16 ? `${root.n.slice(0, 15)}…` : root.n, cxn, cyn - 2);
+    g.globalAlpha = 0.65;
+    g.font = "11px sans-serif";
+    g.fillText(sizeText(cx, root.b), cxn, cyn + 13);
+    g.globalAlpha = 1;
+  }
+
+  function paintInfo() {
+    const nodes = st?.nodes ?? [];
+    const n = nodes[hover >= 0 ? hover : focus];
+    if (!n) {
+      info.replaceChildren(h("b", { text: st?.phase === "scanning" ? cx.t("Scanning…") : cx.t("Nothing scanned yet") }), h("small", { text: st?.phase === "scanning" ? reading : cx.t("The chart never deletes anything. Show a part in Explorer to deal with it there.") }));
+      return;
+    }
+    info.replaceChildren(
+      h("b", { text: `${n.n} · ${sizeText(cx, n.b)}` }),
+      h("small", { text: n.path, title: n.path }),
+    );
+  }
+
+  function at(e: MouseEvent): number {
+    const box = canvas.getBoundingClientRect();
+    const x = e.clientX - box.left - box.width / 2;
+    const y = e.clientY - box.top - box.height / 2;
+    const r = Math.hypot(x, y);
+    let a = Math.atan2(y, x);
+    if (a < -Math.PI / 2) a += TAU;
+    const hit = arcs.find((arc) => r >= arc.r0 && r < arc.r1 && a >= arc.a0 && a < arc.a1) ?? arcs.find((arc) => r >= arc.r0 && r < arc.r1 && a + TAU >= arc.a0 && a + TAU < arc.a1);
+    return hit ? hit.id : -1;
+  }
+
+  canvas.addEventListener("mousemove", (e) => {
+    const id = at(e);
+    if (id !== hover) {
+      hover = id;
+      draw();
+      paintInfo();
+    }
+  });
+  canvas.addEventListener("mouseleave", () => {
+    hover = -1;
+    draw();
+    paintInfo();
+  });
+  canvas.addEventListener("click", (e) => {
+    const nodes = st?.nodes ?? [];
+    const id = at(e);
+    if (id >= 0) {
+      if (nodes[id].d && nodes[id].k.length) focus = id;
+    } else if (nodes[focus]?.p != null) {
+      focus = nodes[focus].p!;
+    }
+    hover = -1;
+    draw();
+    paintInfo();
+    paintReveal();
+  });
+  canvas.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    const id = at(e);
+    void cx.call("diskReveal", { id: id >= 0 ? id : focus });
+  });
+
+  const revealBtn = btn(cx.t("Show in Explorer"), "secondary", () => void cx.call("diskReveal", { id: hover >= 0 ? hover : focus }));
+  function paintReveal() {
+    revealBtn.disabled = !st?.nodes.length;
+  }
+  el.lastElementChild!.append(revealBtn);
+
+  cx.on<DState>("disk", (s) => {
+    const fresh = s.root !== st?.root || s.phase === "scanning";
+    st = s;
+    if (fresh || focus >= s.nodes.length) focus = 0;
+    hover = -1;
+    paintBar();
+    draw();
+    paintInfo();
+    paintReveal();
+  });
+  cx.on<string>("diskProgress", (dir) => {
+    reading = dir;
+    if (st?.phase === "scanning") {
+      draw();
+      paintInfo();
+    }
+  });
+  new ResizeObserver(() => draw()).observe(canvas);
+  paintBar();
+  paintInfo();
+  paintReveal();
+
+  return {
+    el,
+    show() {
+      void cx.call("disk");
+      window.requestAnimationFrame(draw);
+    },
+  };
+}
+
 // ── Uninstall ────────────────────────────────────────────────────────────────
 
 function uninstallView(cx: FeatureCtx, the: Lane) {
@@ -545,10 +808,12 @@ export default defineFeature({
       const clean = cleanView(cx, the, false);
       const uninstall = uninstallView(cx, the);
       const startup = startupView(cx);
-      const pages: Record<string, { el: HTMLElement; show?: () => void }> = { clean, uninstall, startup };
+      const dupes = dupesView(cx, the);
+      const disk = diskView(cx);
+      const pages: Record<string, { el: HTMLElement; show?: () => void }> = { clean, uninstall, startup, dupes, disk };
       const body = h("div", { class: `${P}body` });
       const tabs: [string, HTMLButtonElement][] = (
-        [["clean", "trash", "Clean"], ["uninstall", "close", "Uninstall"], ["startup", "play", "Startup"]] as const
+        [["clean", "trash", "Clean"], ["uninstall", "close", "Uninstall"], ["startup", "play", "Startup"], ["dupes", "copy", "Duplicates"], ["disk", "monitor", "Disk"]] as const
       ).map(([id, ico, title]): [string, HTMLButtonElement] => [id, tab(ico, cx.t(title), () => go(id))]);
       function go(id: string) {
         if (!(id in pages)) return;
@@ -561,6 +826,7 @@ export default defineFeature({
         if (progressOnly) return;
         clean.draw();
         uninstall.draw();
+        dupes.draw();
       });
       root.append(
         h("div", { class: `win ${P}win` },

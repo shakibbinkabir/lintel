@@ -5,11 +5,11 @@
 import type { Notice } from "../core/feature";
 import { ACTIVITY_W, COMPACT_W, NOTICE_W, pixelWidth } from "../core/layout";
 import { BRAND } from "../core/brand";
-import { State, needsYou } from "../core/state";
+import { State, needsYou, type AgentTask } from "../core/state";
 import { setMeter, stripRow } from "../ui/components";
 import { icon } from "../ui/icons";
 import { h } from "../views/dom";
-import { language } from "../i18n/i18n";
+import { language, t } from "../i18n/i18n";
 import { taskLine } from "../views/views";
 import type { Shown } from "./arbiter";
 import { surfaceKey, type Activity } from "./sections";
@@ -57,10 +57,26 @@ function clock(): [string, string] {
   ];
 }
 
+/** "2 at work · Claude 41% · Codex 7%": agents running and each plan's 5-hour use (Settings › Island, off by default). */
+function stats(): string {
+  const busy = State.tasks.filter((x) => x.state === "working" || x.state === "thinking" || x.state === "searching").length;
+  const plans = [["Claude", State.planUsage], ["Codex", State.codexPlanUsage]] as const;
+  return [
+    busy > 0 ? t("{n} at work", { n: busy }) : "",
+    ...plans.flatMap(([name, p]) => (p?.fiveHour ? [`${name} ${Math.round(p.fiveHour.usedPct)}%`] : [])),
+  ].filter(Boolean).join(" · ");
+}
+
+/** The four dots of the folded island: pills that need the user, then running ones, then the rest. */
+function foldedOthers() {
+  const rank = (o: AgentTask) => (needsYou(o) ? 0 : o.state === "working" || o.state === "thinking" || o.state === "searching" ? 1 : 2);
+  return State.otherTasks.map((o, i) => ({ o, i })).sort((a, b) => rank(a.o) - rank(b.o) || a.i - b.i).map((x) => x.o).slice(0, 4);
+}
+
 /** The focused pill (the mascot glides onto its mark) and a dot for each of the others. */
 function pillsRow(): HTMLElement {
   const task = State.focusTask;
-  const others = State.otherTasks.slice(0, 4);
+  const others = foldedOthers();
   const grid = h("span", { class: "isl-grid2" });
   // An amber ring on the dot of a pill whose agent waits for the user.
   for (const o of others) grid.append(h("i", { class: needsYou(o) ? "w" : "", style: `--c:${o.color}` }));
@@ -71,6 +87,7 @@ function pillsRow(): HTMLElement {
     h("b", { "data-shared": "title", text: task ? (task.id === "integration_claude" ? "VS Code" : task.name) : BRAND.name }),
     task ? h("span", { class: "d", text: taskLine(task).text }) : null,
     h("span", { class: "isl-gap" }),
+    State.settings.stripStats && stats() ? h("span", { class: "isl-clock", text: stats() }) : null,
     State.settings.stripClock ? h("span", { class: "isl-clock" }, h("b", { text: clock()[0] }), clock()[1]) : null,
     others.length > 0 ? grid : null,
   );
@@ -80,8 +97,9 @@ function pillsKey(): string {
   const task = State.focusTask;
   return [
     task?.id, task?.name, task ? taskLine(task).text : "",
-    State.otherTasks.slice(0, 4).map((o) => `${o.color}${needsYou(o) ? "!" : ""}`).join(","),
+    foldedOthers().map((o) => `${o.color}${needsYou(o) ? "!" : ""}`).join(","),
     State.settings.stripClock ? clock().join(" ") : "",
+    State.settings.stripStats ? stats() : "",
   ].join("~");
 }
 

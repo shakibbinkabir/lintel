@@ -12,7 +12,7 @@ const REPO = "https://github.com/shakibbinkabir/lintel";
 const NAV = [["features.html", "Features"], ["screenshots.html", "Screenshots"], ["guide.html", "Guide"], ["docs.html", "Docs"], ["contribute.html", "Contribute"], ["about.html", "About"]];
 const PAGES = [
   { file: "index.html", frag: "home", title: "Lintel: an island for Windows, hidden until something needs you", desc: "A free, open-source island at the top of your Windows screen: answer your coding agents, control music and reach your tools, then it gets out of the way." },
-  { file: "features.html", frag: "features", title: "Features: everything Lintel can do | Lintel", desc: "The whole feature list of Lintel 1.0.0, group by group: coding agents, chat, media, system tools, capture, clipboard, voice and more. Each one has a switch." },
+  { file: "features.html", frag: "features", title: "Features: everything Lintel can do | Lintel", desc: "The whole feature list of Lintel 2.0.0, group by group: coding agents (also in WSL and over SSH), chat, media, window layout, capture, cleaner, voice and more. Each one has a switch." },
   { file: "screenshots.html", frag: "screenshots", title: "Screenshots of Lintel on Windows | Lintel", desc: "See Lintel at work: the island with a permission card from a coding agent, the player, the clipboard, the mixer, capture tools and the settings window." },
   { file: "download.html", frag: "download", title: "Download Lintel for Windows 10 and 11 | Lintel", desc: "Download the free Lintel installer for Windows 10 and 11. No administrator rights needed. What Windows will ask, how to remove it, and how to build it yourself." },
   { file: "guide.html", frag: "guide", title: "Guide: your first day with Lintel | Lintel", desc: "A plain guide for new users: bring the island out, connect a coding agent, answer its first request, turn features on and off, and try the voice assistant." },
@@ -31,7 +31,7 @@ function page(p) {
   const links = NAV.map(([href, label]) => `<a href="${b}${href}"${href === p.file ? ' aria-current="page"' : ""}>${label}</a>`).join("\n      ");
   const ld = p.file !== "index.html" ? "" : `
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Lintel","url":"${ORIGIN}","description":"${p.desc}","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"1.0.0","license":"https://www.gnu.org/licenses/gpl-3.0.html","downloadUrl":"${REPO}/releases/download/v1.0.0/lintel-1.0.0-setup.exe","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakib Bin Kabir","url":"https://github.com/shakibbinkabir"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Lintel","url":"${ORIGIN}","description":"${p.desc}","applicationCategory":"UtilitiesApplication","operatingSystem":"Windows 10, Windows 11","softwareVersion":"2.0.0","license":"https://www.gnu.org/licenses/gpl-3.0.html","downloadUrl":"${REPO}/releases/download/v2.0.0/lintel-2.0.0-setup.exe","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Person","name":"Shakib Bin Kabir","url":"https://github.com/shakibbinkabir"}}
 </script>`;
   return `<!doctype html>
 <html lang="en">

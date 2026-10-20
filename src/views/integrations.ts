@@ -71,6 +71,7 @@ const OPEN_URLS: Record<string, string> = {
   integration_stripe: "https://dashboard.stripe.com/payments",
   integration_notion: "https://notion.so",
   integration_calcom: "https://app.cal.com/bookings",
+  integration_linear: "https://linear.app/inbox",
 };
 
 /** IntegrationCardView.statusLabel on macOS. */
@@ -411,6 +412,31 @@ function notionCard(): HTMLElement {
   return h("div", { class: "int-card" }, header("#E8E8E8", "Notion", t("Recent")), rows);
 }
 
+// ── Linear ────────────────────────────────────────────────────────────────────
+
+function linearLine(): Line {
+  const n = arr("integration_linear", "unread").length;
+  return { text: n > 0 ? t("{0} unread", { 0: n }) : t("Inbox empty") };
+}
+
+/** The unread inbox: a row opens the issue. */
+function linearCard(): HTMLElement {
+  const unread = arr("integration_linear", "unread");
+  const rows = h("div", { class: "int-rows tight" });
+  for (const n of unread.slice(0, 4)) {
+    rows.append(
+      h(
+        "button",
+        { class: "int-page", onclick: () => typeof n.url === "string" && void Bridge.openUrl(n.url) },
+        h("span", { class: "int-name", text: `${n.identifier ?? ""} ${n.title ?? ""}`.trim() }),
+        h("span", { class: "int-ago", text: timeAgo(n.createdAt) }),
+      ),
+    );
+  }
+  if (unread.length === 0) rows.append(h("span", { class: "int-ago", text: t("Inbox empty") }));
+  return h("div", { class: "int-card" }, header("#5E6AD2", "Linear", unread.length > 0 ? t("{0} unread", { 0: unread.length }) : t("Inbox")), rows);
+}
+
 // ── Cal.com ───────────────────────────────────────────────────────────────────
 
 /** The bookings, the next one first. */
@@ -537,6 +563,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case "integration_linear":
+      return info.loaded;
     default:
       return false;
   }
@@ -550,6 +578,7 @@ const LINES: Record<string, () => Line> = {
   integration_stripe: stripeLine,
   integration_notion: notionLine,
   integration_calcom: calcomLine,
+  integration_linear: linearLine,
 };
 
 /**
@@ -612,6 +641,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return notionCard();
     case "integration_calcom":
       return calcomCard();
+    case "integration_linear":
+      return linearCard();
     default:
       return idleCard(task, hooks.openSettings);
   }

@@ -12,11 +12,13 @@
 // and, when it does, the relay is told "no decision".
 
 import { Bridge, onEvent } from "../core/bridge";
-import { buildFileDiff, fileName, makeDiffStep, toOneLine } from "../core/diff";
+import { fileName, makeDiffStep, toOneLine } from "../core/diff";
+import { buildFileDiffs } from "./patch-diff";
+import { isGitPush, setGitPush } from "../core/github";
 import { Sound } from "../core/sound";
 import { State, type AgentTask, type AskedQuestion } from "../core/state";
-import { isInjected, judge, mayQuit, modelLabel, QUIT_AFTER_MS, SILENT_MS, type Session, type Verdict } from "../core/sessions";
-import { APPROVAL_AGENTS, QUESTION_AGENTS, agentColor, agentName, validateAgent } from "./agents";
+import { judge, mayQuit, modelLabel, promptStep, QUIT_AFTER_MS, SILENT_MS, type Session, type Verdict } from "../core/sessions";
+import { APPROVAL_AGENTS, QUESTION_AGENTS, agentColor, agentName, isClaudeAlias, noteFinished, validateAgent } from "./agents";
 import type { Island } from "./island";
 import { parseClaudePlan, restorePlanUsage } from "../core/plan";
 import { setClaudePlanUsage, storedClaudePlanUsage } from "../views/usage";
@@ -24,11 +26,20 @@ import { N_, t } from "../i18n/i18n";
 
 const CLAUDE_ID = "integration_claude";
 const CURSOR_ID = "agent_cursor";
+const JETBRAINS_ID = "agent_jetbrains";
 
 /** How long a request waits here before its terminal has taken over (the relay gives up at 108 s). */
 const CARD_MS = 110_000;
 /** Each waiting request is withdrawn when its own time is up, counted from its arrival. */
 const timeouts = new Map<string, number>();
+
+/** A `git push` of a session shows on the GitHub card, and the card refreshes when it ends. */
+function noteGitPush(name: string, payload: HookPayload) {
+  if (!isGitPush(payload.tool_name ?? "", payload.tool_input ?? {})) return;
+  setGitPush(name === "PreToolUse" ? "pushing" : name === "PostToolUse" ? "pushed" : "failed");
+  State.notify();
+  if (name !== "PreToolUse" && State.tasks.some((x) => x.id === "integration_github")) void Bridge.refreshIntegration("integration_github");
+}
 
 /**
  * Takes one waiting request down, by its id: its turn ended, its time ran out,
@@ -96,12 +107,19 @@ interface HookPayload {
   lintel_agent?: string;
   /** Hermes: where the session runs (telegram, discord…; "cli" in a terminal). */
   platform?: string;
-  /** "cursor" when Claude Code runs in Cursor's terminal (set by the relay). */
+  /** "cursor" or "jetbrains" when Claude Code runs in that editor's terminal (set by the relay). */
   term_editor?: string;
+  /** The title of the session's terminal window, when the app found the window (Claude Code writes its one-line summary there). */
+  lintel_window_title?: string;
   /** StatusLine (the plan usage relay): Claude Code's 5-hour and weekly limits. */
   rate_limits?: unknown;
   /** PermissionRequest: the rules Claude Code offers to remember (the Always button). */
   permission_suggestions?: unknown;
+  /** The folder the session started in and its /rename title, from Claude Code's own record (the relay reads it). */
+  session_root?: string;
+  session_title?: string;
+  /** Stop: the window the session runs in is the one in front (Rust adds it). */
+  lintel_front?: boolean;
   /** Set on every event fired inside a subagent. */
   agent_id?: string;
   /** SubagentStop: empty for the CLI's own helpers (prompt suggestions), which are not the session's work. */
@@ -152,12 +170,36 @@ const TOOL_LABELS: Record<string, string> = {
   replace_file_content: N_("Edits"),
   read_url_content: N_("Fetches"),
   search_web: N_("Searches the web"),
+  ask_question: N_("Needs input"),
+  multi_replace_file_content: N_("Edits"),
+  list_dir: N_("Lists"),
+  // Cursor's shell, Codex's patch, Kiro CLI's tools.
+  Shell: N_("Runs"),
+  apply_patch: N_("Edits"),
+  execute_bash: N_("Runs"),
+  shell: N_("Runs"),
+  fs_read: N_("Reads"),
+  read: N_("Reads"),
+  fs_write: N_("Edits"),
+  write: N_("Edits"),
 };
 
+/** Kiro's file tools: their `command` names the operation ("str_replace"), it is not a shell line. */
+const FILE_TOOLS = new Set(["fs_read", "read", "fs_write", "write"]);
+
+/** Antigravity's question tool, bare or behind a server prefix. */
+const isAsk = (tool: string) => tool === "ask_question" || tool.endsWith(":ask_question");
+
 function stepLabel(tool: string, input: Record<string, unknown>): string {
+  if (isAsk(tool)) tool = "ask_question";
   const label = TOOL_LABELS[tool] ? t(TOOL_LABELS[tool]) : tool;
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);
-  const cmd = str("command");
+  const asked = Array.isArray(input.questions) ? (input.questions[0] as { question?: unknown } | undefined)?.question : null;
+  if (tool === "ask_question" && typeof asked === "string" && asked.trim()) return `${label} · ${toOneLine(asked).slice(0, 80)}`;
+  // Codex's patch: the first file it touches.
+  const patched = tool === "apply_patch" ? str("command")?.match(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/m)?.[1] : null;
+  if (patched) return `${label} · ${lastPathComponent(patched.trim())}`;
+  const cmd = FILE_TOOLS.has(tool) ? null : str("command");
   if (cmd) return `${label} · ${cmd.slice(0, 40)}`;
   const path = str("path");
   if (path) return `${label} · ${lastPathComponent(path)}`;
@@ -187,6 +229,10 @@ const APPROVAL_FIELDS = [
 ] as const;
 
 function approvalTarget(tool: string, input: Record<string, unknown>): string {
+  // A plan does not fit on the card: its title, the first line without its heading marks.
+  if (tool === "ExitPlanMode" && typeof input.plan === "string") {
+    return input.plan.split("\n").map((line) => line.replace(/^[\s#]+/, "").trim()).find(Boolean) ?? tool;
+  }
   for (const field of APPROVAL_FIELDS) {
     const value = input[field];
     if (typeof value === "string" && value.trim()) {
@@ -230,10 +276,11 @@ function askedQuestions(tool: string, input: Record<string, unknown>): AskedQues
 function recordDiff(agentId: string, payload: HookPayload) {
   if (payload.lintel_diff_truncated) return;
   if (!State.tasks.some((t) => t.id === agentId)) return;
-  const diff = buildFileDiff(payload.tool_name ?? "", payload.tool_input ?? {});
-  if (!diff) return;
-  const id = State.appendSessionDiff(agentId, diff);
-  State.appendStep(agentId, makeDiffStep(fileName(diff.path), diff.added, diff.removed, id));
+  // One diff per file: Codex's patch can change several.
+  for (const diff of buildFileDiffs(payload.tool_name ?? "", payload.tool_input ?? {}, payload.cwd ?? "")) {
+    const id = State.appendSessionDiff(agentId, diff);
+    State.appendStep(agentId, makeDiffStep(fileName(diff.path), diff.added, diff.removed, id));
+  }
 }
 
 /** The final message stays on the card until the next turn starts. */
@@ -257,16 +304,49 @@ function restNow(id: string) {
   task.finalText = null;
 }
 
+/**
+ * Option (Settings › Claude Code): another session's finish or error opens its card for a
+ * moment, then the pill you were on comes back. Never over an approval or a question, an
+ * island you are using, or a call. True when the card went up.
+ */
+function peek(island: Island, id: string, view: "finished" | "error"): boolean {
+  const back = State.focusId;
+  const asking = State.pendingApproval || State.tasks.some((x) => x.state === "approval" || x.state === "question");
+  if (!State.settings.peekFinished || !back || back === id || asking || State.mode === "expanded" || Sound.hushed) return false;
+  State.setFocus(id);
+  island.alert(view);
+  window.setTimeout(() => {
+    if (State.focusId === id && !State.pendingApproval) State.setFocus(back);
+  }, 6000);
+  return true;
+}
+
 /** A session is gone (ended, silent for half an hour, or the thirteenth): its pill with it. */
 function release(island: Island, session: Session) {
   for (const a of State.approvals.ofTurn(session.family, session.id, Infinity)) withdraw(island, a.requestId, true);
   cancelStopTimer(session.pillId);
+  windowTitles.delete(session.id);
   State.clearSessionDiffs(session.pillId);
   // A kept pill (the main one, a declared one) goes back as it was; any other goes away.
   State.removeTask(session.pillId);
 }
 
 const text = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+
+/** The last terminal title heard per session, so an event without one keeps the pill's name. Bounded. */
+const windowTitles = new Map<string, string>();
+
+/**
+ * The terminal window's title as the pill shows it. Claude Code writes its summary
+ * there behind a state glyph (✳ ⠂ …), which the pill already conveys; a title without
+ * that glyph is the shell's own (or another tab's), and says nothing about the session.
+ */
+function cleanWindowTitle(raw: string | undefined): string | null {
+  if (!raw || /^[\p{L}\p{N}]/u.test(raw)) return null;
+  const title = raw.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  if (!title || title === "Claude Code" || title.length > 120) return null;
+  return title;
+}
 
 /** What the session says it runs with: its permission mode, effort and model (the session chips). */
 function noteChips(pillId: string | undefined, payload: HookPayload): boolean {
@@ -327,6 +407,13 @@ export function registerHookHandlers(island: Island) {
   // The last plan numbers seen survive a restart, as on the Mac.
   State.planUsage ??= restorePlanUsage(storedClaudePlanUsage());
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  // The relay hung up while its card was up: the prompt was answered in the
+  // terminal, so the card goes at once, with nobody left to release.
+  void onEvent<string>("hook-resolved", (requestId) => withdraw(island, requestId));
+  // Sessions already running get their pills at once, not at their next event.
+  void Bridge.runningSessions().then((found) => {
+    for (const [session_id, cwd] of found ?? []) handleHook(island, { hook_event_name: "SessionStart", source: "found", session_id, cwd });
+  });
   void Bridge.autoLaunched().then((yes) => {
     autoLaunched = yes === true;
     armQuit();
@@ -357,16 +444,24 @@ function handleHook(island: Island, payload: HookPayload) {
   // The CLI's own helpers (prompt suggestions) are not the session's work.
   if (name === "SubagentStop" && payload.agent_type === "") return;
   const cwd = payload.cwd ?? "";
-  const raw = lastPathComponent(cwd);
+  // The session's /rename title, else the folder it started in (not the one after a `cd`).
+  // With the terminal's title in between: Claude Code keeps a one-line summary of the session there.
+  const sessionKey = payload.session_id ?? "";
+  const heard = cleanWindowTitle(payload.lintel_window_title);
+  if (heard && sessionKey) windowTitles.set(sessionKey, heard);
+  const windowTitle = heard ?? (windowTitles.get(sessionKey) || "");
+  const raw = text(payload.session_title) || windowTitle || lastPathComponent(text(payload.session_root)) || lastPathComponent(cwd);
   const projectName = (raw || "Session");
 
   // Route to the right agent. Valid lintel_agent → that agent's "agent_<name>".
   // "claude" is reserved; absent or invalid → Claude Code's own pill: Cursor's
   // when it runs in Cursor's terminal (Mac #120), VS Code's otherwise.
   const validAgent = validateAgent(payload.lintel_agent);
-  const workspaceId = payload.term_editor === "cursor" ? CURSOR_ID : CLAUDE_ID;
+  const workspaceId = payload.term_editor === "cursor" ? CURSOR_ID : payload.term_editor === "jetbrains" ? JETBRAINS_ID : CLAUDE_ID;
   const family = validAgent ? `agent_${validAgent}` : workspaceId;
   const isExternalAgent = validAgent !== null;
+  // `--agent claude-<name>` is Claude Code with a pill of its own: its cards and questions as usual.
+  const isClaudeCode = !isExternalAgent || isClaudeAlias(validAgent);
   const sessionId = payload.session_id ?? "";
 
   // Then to the session's pill: the agent's own for its first session, one of
@@ -458,6 +553,8 @@ function handleHook(island: Island, payload: HookPayload) {
     case "SessionStart": {
       ensurePill();
       clearFinal(agentId);
+      // Found running at launch (src-tauri hooks.rs): a pill, no sound and no island.
+      if (payload.source === "found") break;
       // `/clear` and `/compact` start the session again: the old turn is gone,
       // and there is nothing to announce.
       if (payload.source === "clear" || payload.source === "compact") {
@@ -484,11 +581,14 @@ function handleHook(island: Island, payload: HookPayload) {
       ensurePill();
       supersedeStop();
       clearFinal(agentId);
+      // A finished or failed card on screen is about the turn before: back to the overview.
+      if (focused && State.mode === "expanded" && (State.view === "finished" || State.view === "error")) island.setView("overview");
       State.updateTask(agentId, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       // A prompt the CLI wrote itself (`<task-notification>`) is not the user's words.
-      const asked = payload.prompt ?? payload.message;
-      if (asked && !isInjected(asked)) State.appendStep(agentId, asked.slice(0, 60));
+      // A slash command shows as typed (`/compact`), not as the tags the CLI echoes it in.
+      const asked = promptStep(payload.prompt ?? payload.message);
+      if (asked) State.appendStep(agentId, asked);
       surface("overview", false);
       break;
     }
@@ -500,18 +600,27 @@ function handleHook(island: Island, payload: HookPayload) {
       // The strip comes out when work starts, not for every tool: idle stays idle (§5.2).
       const started = task()?.state !== "working";
       atWork();
+      noteGitPush(name, payload);
       const tool = payload.tool_name ?? "Tool";
       // A subagent's tool is shown as its own; the session's last tool stays the session's.
       State.appendStep(agentId, (verdict === "sub" ? "↳ " : "") + stepLabel(tool, payload.tool_input ?? {}));
       const made = task();
       if (made && verdict !== "sub") made.lastTool = tool;
-      if (started) surface("overview", false);
+      const cmd = payload.tool_input?.command;
+      if (made && typeof cmd === "string" && cmd) made.lastCommand = cmd.slice(0, 300);
+      // Antigravity asks a question in its terminal: the pill says it needs input, with the sound and the island out.
+      if (isAsk(tool) && verdict !== "sub" && !State.approvals.all().some((a) => a.pillId === agentId)) {
+        State.updateTask(agentId, "question");
+        Sound.play("question");
+        if (!State.pendingApproval && !Sound.hushed) surface("overview", true);
+      } else if (started) surface("overview", false);
       break;
     }
 
     case "PostToolUse":
     case "PostToolUseFailure": {
       supersedeStop();
+      noteGitPush(name, payload);
       // The tool ran, or was refused: a request for it that still waits here was
       // answered (or dismissed) in the terminal, and its card would be lying.
       const tool = payload.tool_name ?? "Tool";
@@ -581,10 +690,15 @@ function handleHook(island: Island, payload: HookPayload) {
       // One notice for a turn: a second stop of the same turn changes the pill
       // and stays silent.
       const announce = verdict === "finish";
-      if (announce) Sound.play("finish");
+      // Its terminal is the window in front: the user sees it finish, so a badge is all it gets.
+      const watched = announce && payload.lintel_front === true;
+      if (announce && !watched) Sound.play("finish");
+      noteFinished(task());
       // A card waiting for an answer is never covered by another alert.
-      if (announce && focused && !State.pendingApproval) surface("finished", true);
-      else if (!focused || State.pendingApproval) State.setPillBadge(agentId, "finished");
+      if (announce && !watched && focused && !State.pendingApproval && !Sound.hushed) surface("finished", true);
+      else if (announce && !watched && !focused && peek(island, agentId, "finished")) {
+        // its card is up for a moment
+      } else if (!focused || State.pendingApproval || watched || Sound.hushed) State.setPillBadge(agentId, "finished");
       // The pill stays for the next turn: it goes at the session's end, or
       // after half an hour of silence.
       restAfter(agentId, 5200);
@@ -602,8 +716,10 @@ function handleHook(island: Island, payload: HookPayload) {
       supersedeStop();
       State.updateTask(agentId, "error");
       Sound.play("error");
-      if (focused && !State.pendingApproval) surface("error", true);
-      else State.setPillBadge(agentId, "error");
+      if (focused && !State.pendingApproval && !Sound.hushed) surface("error", true);
+      else if (!focused && peek(island, agentId, "error")) {
+        // its card is up for a moment
+      } else State.setPillBadge(agentId, "error");
       break;
 
     case "SessionEnd":
@@ -629,7 +745,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // CLI, Muse Code, and Claude Code run from the Claude desktop app) get a
       // card. Anyone else's request is declined at once, so the agent asks in
       // its own terminal.
-      if (isExternalAgent && !APPROVAL_AGENTS.has(validAgent!)) {
+      if (isExternalAgent && !isClaudeCode && !APPROVAL_AGENTS.has(validAgent!)) {
         if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
         break;
       }
@@ -640,7 +756,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // Claude Code asking a question is not a permission to grant: the island
       // shows the options and sends back the one that was picked. Only Claude
       // Code asks questions this way, from a terminal or from its desktop app.
-      const asks = !isExternalAgent || QUESTION_AGENTS.has(validAgent!);
+      const asks = isClaudeCode || QUESTION_AGENTS.has(validAgent!);
       const questions = asks ? askedQuestions(tool, input) : null;
       const view = questions ? "question" : "approval";
       ensurePill();
@@ -668,6 +784,8 @@ function handleHook(island: Island, payload: HookPayload) {
       if (requestId) void Bridge.approvalAck(requestId);
       // The same request sent twice: acknowledged again, nothing else.
       if (taken === "known") break;
+      // These agents report the tool only as this request (no PreToolUse of its own): it is the turn's step too.
+      if (validAgent === "kiro" || validAgent === "antigravity") State.appendStep(agentId, stepLabel(tool, input));
       supersedeStop();
       State.updateTask(agentId, view);
       Sound.play(view);

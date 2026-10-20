@@ -67,6 +67,7 @@ const DEFAULT_ICON: Record<string, string> = {
   media: "play",
   nowplaying: "music",
   shortcut: "keyboard",
+  command: "terminal",
   submenu: "chevr",
 };
 const MEDIA_ICON: Record<string, string> = { playPause: "play", next: "next", prev: "prev" };
@@ -123,6 +124,8 @@ export function mountWheel(root: HTMLElement, host: Host): Wheel {
         return it.target.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0];
       case "shortcut":
         return it.target;
+      case "command":
+        return it.target.replace(/^"/, "").split(/[\\/ ]/).filter(Boolean).pop() ?? it.target;
       case "submenu":
         return t("Group");
       default:

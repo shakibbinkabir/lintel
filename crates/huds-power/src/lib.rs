@@ -10,7 +10,7 @@
 // switch, and the level the new device says by itself right after one.
 //
 // Events: `volume` and `mic` { level, mute, quiet }, `brightness` { level, displays },
-// `power` { ac, percent, charging, saver }, `fullscreen` { on }, `micUse` { apps: [name] }
+// `power` { ac, percent, charging, saver }, `fullscreen` { on }, `micUse` { apps: [name], camera: [name] }
 // (apps with the microphone open now), `chargeLimit` { percent }.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering::Relaxed};
@@ -41,7 +41,7 @@ static MANIFEST: Manifest = Manifest {
     uses: &[],
     shortcuts: &[],
     tray: &[],
-    defaults: r#"{ "volume": true, "mic": true, "brightness": true, "battery": true, "lowBattery": 20, "restOnBattery": false, "fullscreen": true, "micUse": true, "chargeLimit": 0 }"#,
+    defaults: r#"{ "volume": true, "mic": true, "brightness": true, "battery": true, "lowBattery": 20, "restOnBattery": false, "fullscreen": true, "micUse": true, "quietMic": false, "quietCamera": false, "chargeLimit": 0 }"#,
 };
 
 #[derive(Default)]
@@ -154,14 +154,15 @@ impl Shared {
     }
 }
 
-/// The microphone watcher follows the setting: on loads it, off drops it.
-fn sync_mic(cx: &Ctx, slot: &Mutex<Option<mic::Watch>>, on: bool) {
+/// The microphone and camera watcher follows the settings: any of them on loads it, all off drops it.
+fn sync_mic(cx: &Ctx, slot: &Mutex<Option<mic::Watch>>, settings: &Value) {
+    let on = ["micUse", "quietMic", "quietCamera"].iter().any(|k| settings[*k].as_bool().unwrap_or(k == &"micUse"));
     let mut slot = slot.lock().unwrap();
     if on && slot.is_none() {
         let cx = cx.clone();
-        *slot = mic::watch(move |apps| cx.emit(ID, "micUse", json!({ "apps": apps })));
+        *slot = mic::watch(move |apps, camera| cx.emit(ID, "micUse", json!({ "apps": apps, "camera": camera })));
     } else if !on && slot.take().is_some() {
-        cx.emit(ID, "micUse", json!({ "apps": Vec::<String>::new() }));
+        cx.emit(ID, "micUse", json!({ "apps": Vec::<String>::new(), "camera": Vec::<String>::new() }));
     }
 }
 
@@ -293,7 +294,7 @@ impl Feature for HudsPower {
             });
         }
 
-        sync_mic(cx, &self.mic, cx.settings(ID)["micUse"].as_bool().unwrap_or(true));
+        sync_mic(cx, &self.mic, &cx.settings(ID));
         shared.charge_limit(cx);
 
         *running = Some(Running { _audio: audio, _events: [power, front], brightness_stop });
@@ -315,7 +316,7 @@ impl Feature for HudsPower {
         self.shared.hide.store(settings["fullscreen"].as_bool().unwrap_or(true), Relaxed);
         self.shared.front(cx, &svc_sysevents::foreground());
         if self.running.lock().unwrap().is_some() {
-            sync_mic(cx, &self.mic, settings["micUse"].as_bool().unwrap_or(true));
+            sync_mic(cx, &self.mic, settings);
             self.shared.charge_limit(cx);
         }
     }
@@ -334,6 +335,7 @@ impl Feature for HudsPower {
                 "micMute": svc_audio::endpoint_volume(Flow::Capture).ok().map(|v| v.mute),
                 "fullscreen": self.shared.fullscreen.load(Relaxed),
                 "micApps": self.mic.lock().unwrap().is_some().then(mic::in_use),
+                "cameraApps": self.mic.lock().unwrap().is_some().then(mic::camera_in_use),
             })),
             "battery" => Ok(battery_json()),
             "batterySettings" => {

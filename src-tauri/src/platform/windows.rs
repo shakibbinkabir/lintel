@@ -17,7 +17,7 @@ use ::windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use ::windows::Win32::System::Ole::RevokeDragDrop;
 use ::windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use ::windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetKeyboardLayoutList, MapVirtualKeyExW, SendInput, ToUnicodeEx, HKL, INPUT, INPUT_0,
@@ -25,7 +25,7 @@ use ::windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
     EnumChildWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowThreadProcessId,
-    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, SetWindowLongW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 use notch_core::win::{find_on_path, process_table, top_windows};
@@ -54,6 +54,19 @@ pub fn codex_candidates() -> Vec<PathBuf> {
     if let Some(home) = var("USERPROFILE") {
         out.push(home.join(".bun").join("bin").join("codex.exe"));
         out.push(home.join(".local").join("bin").join("codex.exe"));
+    }
+    // The Codex desktop app's own CLI, one opaque folder per release: newest first.
+    // (After upstream pull request 715.)
+    if let Some(bin) = var("LOCALAPPDATA").map(|l| l.join("OpenAI").join("Codex").join("bin")) {
+        let mut bundled: Vec<_> = std::fs::read_dir(bin)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path().join("codex.exe"))
+            .filter_map(|exe| Some((exe.metadata().ok().filter(|m| m.is_file())?.modified().ok(), exe)))
+            .collect();
+        bundled.sort_by(|a, b| b.0.cmp(&a.0));
+        out.extend(bundled.into_iter().map(|(_, exe)| exe));
     }
     out.retain(|p| p.is_file());
     out
@@ -180,10 +193,23 @@ unsafe extern "system" fn revoke_render_widget(hwnd: HWND, _: LPARAM) -> BOOL {
 /// extended styles again from its flags each time one of them changes, which
 /// the click-through toggle does many times a second, so a style set behind its
 /// back (as this used to be) was gone the first time the pointer moved.
-// debt: WS_EX_TOOLWINDOW was set the same way and lost the same way, so the
-// island is not kept out of Alt-Tab; it needs an owner window or tao's support.
 pub fn make_non_activating(win: &WebviewWindow) {
     let _ = win.set_focusable(false);
+}
+
+/// Click-through on or off, then WS_EX_TOOLWINDOW (out of Alt-Tab) put back:
+/// tao rewrites the extended styles from its own flags on each toggle, which
+/// drops a style set behind its back. Only writes when the bit is missing.
+pub fn set_click_through(win: &WebviewWindow, ignore: bool) {
+    let _ = win.set_ignore_cursor_events(ignore);
+    if let Some(hwnd) = hwnd_of(win) {
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            if style as u32 & WS_EX_TOOLWINDOW.0 == 0 {
+                SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW.0 as i32);
+            }
+        }
+    }
 }
 
 /// Shows a window without making it the active one: `show()` activates even a
@@ -329,8 +355,26 @@ unsafe fn bring_to_front(hwnd: HWND) -> bool {
         };
         SendInput(&[nudge], std::mem::size_of::<INPUT>() as i32);
         let _ = SetForegroundWindow(hwnd);
+        if GetForegroundWindow() == hwnd {
+            return true;
+        }
+        // Still refused: share the input queue of the window in front for the moment of the call.
+        let front = GetWindowThreadProcessId(GetForegroundWindow(), None);
+        let me = GetCurrentThreadId();
+        let attached = front != 0 && front != me && AttachThreadInput(me, front, true).as_bool();
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(me, front, false);
+        }
         GetForegroundWindow() == hwnd
     }
+}
+
+/// True when the window in front belongs to one of these processes (a session's terminal).
+pub fn in_front_of(owners: &[u32]) -> bool {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
+    pid != 0 && owners.contains(&pid)
 }
 
 /// True once, when the island held the keyboard and the user has given it to
@@ -601,7 +645,55 @@ pub fn first_with_window(pids: &[u32]) -> Option<u32> {
 
 /// What a session remembers: the ancestor that owns a window, or nothing.
 pub fn window_owners(ancestors: &[u32]) -> Vec<u32> {
-    first_with_window(ancestors).into_iter().collect()
+    // Never this app: a task the chat started runs under it.
+    let ancestors: Vec<u32> = ancestors.iter().copied().filter(|pid| *pid != std::process::id()).collect();
+    first_with_window(&ancestors)
+        .or_else(|| ancestors.iter().find_map(|pid| console_window_owner(*pid)))
+        .into_iter()
+        .collect()
+}
+
+/// The processes the relay listed itself, cut below the desktop shell and the services.
+pub fn below_tree_tops(listed: &[u32]) -> Vec<u32> {
+    session_window::below_tops(&process_table(), listed)
+}
+
+// Declared by hand, like the calls above: no extra `windows` crate feature.
+#[link(name = "kernel32")]
+extern "system" {
+    fn AttachConsole(pid: u32) -> i32;
+    fn FreeConsole() -> i32;
+    fn GetConsoleWindow() -> *mut core::ffi::c_void;
+}
+
+/// The console route to a session's window, where no ancestor owns one: a
+/// PowerShell started from the Start menu has explorer.exe for a parent, and
+/// Windows Terminal only hosts it as the default console, never an ancestor.
+/// Attached to `pid`'s console for a moment, GetConsoleWindow gives a hidden
+/// pseudo-console window whose root owner is the Windows Terminal window, or a
+/// classic console's own window; its process is what the session remembers.
+/// The console is process-wide: one caller at a time, and never while the app
+/// has a console of its own (a dev build run from a terminal), which freeing
+/// would lose. (After upstream pull request 607.)
+fn console_window_owner(pid: u32) -> Option<u32> {
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOTOWNER};
+    static CONSOLE: Mutex<()> = Mutex::new(());
+    let _one = CONSOLE.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        if !GetConsoleWindow().is_null() || AttachConsole(pid) == 0 {
+            return None;
+        }
+        let console = HWND(GetConsoleWindow());
+        let _ = FreeConsole();
+        if console.is_invalid() {
+            return None;
+        }
+        let root = GetAncestor(console, GA_ROOTOWNER);
+        let root = if root.is_invalid() { console } else { root };
+        let mut owner = 0u32;
+        GetWindowThreadProcessId(root, Some(&mut owner));
+        (owner != 0 && owner != std::process::id() && IsWindowVisible(root).as_bool()).then_some(owner)
+    }
 }
 
 /// A session's or an app's window to the front: restored when it is minimised, then taken the checked way
@@ -628,6 +720,17 @@ pub fn focus_process_window(pid: u32, folder: &str) -> Option<isize> {
         .map(|(hwnd, _, title)| (hwnd, title))
         .collect();
     session_window::pick_window(&candidates, folder).copied().filter(|hwnd| bring_forward(*hwnd))
+}
+
+/// The title of the window a session remembered, the one named after `folder` if its owner has several:
+/// Claude Code writes a one-line summary of the session there (after upstream pull request 607).
+// debt: in Windows Terminal this is the title of the tab in front, which is another session's when this one is behind.
+pub fn session_window_title(owners: &[u32], folder: &str) -> Option<String> {
+    let pid = *owners.first()?;
+    let candidates: Vec<(isize, String)> =
+        top_windows().into_iter().filter(|(_, owner, _)| *owner == pid).map(|(hwnd, _, title)| (hwnd, title)).collect();
+    let hwnd = *session_window::pick_window(&candidates, folder)?;
+    candidates.into_iter().find(|(h, _)| *h == hwnd).map(|(_, title)| title).filter(|t| !t.is_empty())
 }
 
 /// Brings forward the window a session remembered (`window_owners`): the window, when it came.

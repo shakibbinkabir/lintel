@@ -8,13 +8,20 @@
 // way only: the user saw its row with its size, ticked it and confirmed, and
 // `svc_fs::recycle` moved it to the Recycle Bin after checking it again. The
 // page names rows by the number the scan gave them, never by a path.
+//
+// Two more readers share the window: the disk analyzer (sizes as a tree; it
+// can only show a node in Explorer) and the duplicate finder (its copies are
+// rows of the same list, moved by the same `clean`, never the last copy).
 
 pub mod clean;
+pub mod disk;
+pub mod dupes;
 pub mod startup;
 pub mod uninstall;
 
+use std::cell::Cell;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -75,7 +82,7 @@ struct Un {
 
 #[derive(Default)]
 struct St {
-    /// "" | "scanning" | "cleaning"
+    /// "" | "scanning" | "cleaning" | "dupes"
     phase: &'static str,
     /// The target being read.
     scanning: &'static str,
@@ -83,6 +90,9 @@ struct St {
     rows: Vec<Row>,
     /// What the last uninstall left behind.
     left: Vec<Row>,
+    /// The duplicate finder's groups, a row a copy.
+    dupes: Vec<Vec<Row>>,
+    dupes_at: Option<u64>,
     /// The last row number given: a row of an older list is never taken for a new one.
     ids: u32,
     done: Option<Done>,
@@ -106,9 +116,21 @@ struct Saved {
     last_scan: Option<u64>,
 }
 
+/// The disk analyzer's last tree.
+#[derive(Default)]
+struct Disk {
+    /// "" | "scanning"
+    phase: &'static str,
+    root: String,
+    nodes: Vec<disk::Flat>,
+    at: Option<u64>,
+    cancel: Arc<AtomicBool>,
+}
+
 #[derive(Default)]
 struct Inner {
     st: Mutex<St>,
+    disk: Mutex<Disk>,
     /// The schedule's thread, by the frequency it was armed for; it ends when the sender goes.
     timer: Mutex<Option<(String, Sender<()>)>>,
     /// The user will not wait any longer for an uninstaller to be done.
@@ -137,6 +159,8 @@ fn snapshot(inner: &Inner) -> Value {
         "scanning": st.scanning,
         "rows": rows(&st.rows),
         "left": rows(&st.left),
+        "dupes": st.dupes.iter().map(|g| rows(g)).collect::<Vec<_>>(),
+        "dupesAt": st.dupes_at,
         "done": st.done,
         "progress": [st.progress.0, st.progress.1],
         "bin": st.bin.map(|(bytes, items)| [bytes, items]),
@@ -148,6 +172,115 @@ fn snapshot(inner: &Inner) -> Value {
 
 fn tell(cx: &Ctx, inner: &Inner) {
     cx.emit(ID, "state", snapshot(inner));
+}
+
+fn tell_disk(cx: &Ctx, inner: &Inner) {
+    let d = inner.disk.lock().unwrap();
+    let nodes: Vec<Value> = d
+        .nodes
+        .iter()
+        .map(|n| json!({ "n": n.name, "d": n.dir, "b": n.bytes, "p": (n.parent != usize::MAX).then_some(n.parent), "k": n.kids, "path": n.path.to_string_lossy() }))
+        .collect();
+    cx.emit(ID, "disk", json!({ "phase": if d.phase.is_empty() { "idle" } else { d.phase }, "root": d.root, "nodes": nodes, "at": d.at }));
+}
+
+/// Reads the sizes under a drive or a folder. Nothing is removed.
+fn disk_scan(cx: &Ctx, inner: &Arc<Inner>, root: &str) -> Result<(), String> {
+    let path = PathBuf::from(root);
+    if !path.is_absolute() || root.starts_with("\\\\") || !path.is_dir() {
+        return Err("not a folder on this PC".into());
+    }
+    let cancel = {
+        let mut d = inner.disk.lock().unwrap();
+        if !d.phase.is_empty() || inner.off.load(SeqCst) {
+            return Err("busy".into());
+        }
+        d.phase = "scanning";
+        d.root = root.to_string();
+        d.nodes.clear();
+        d.cancel = Arc::new(AtomicBool::new(false));
+        d.cancel.clone()
+    };
+    tell_disk(cx, inner);
+    let (cx, inner) = (cx.clone(), inner.clone());
+    std::thread::spawn(move || {
+        let last = Cell::new(Instant::now());
+        let nodes = disk::scan(&path, &cancel, &|dir| {
+            if last.get().elapsed() >= Duration::from_millis(150) {
+                last.set(Instant::now());
+                cx.emit(ID, "diskProgress", dir.to_string_lossy());
+            }
+        });
+        {
+            let mut d = inner.disk.lock().unwrap();
+            d.phase = "";
+            d.at = Some(now());
+            d.nodes = if cancel.load(SeqCst) { Vec::new() } else { nodes };
+        }
+        tell_disk(&cx, &inner);
+    });
+    Ok(())
+}
+
+/// Looks for copies of the same file in the user's own folders. Lists; moves nothing.
+fn find_dupes(cx: &Ctx, inner: &Arc<Inner>) -> Result<(), String> {
+    let cancel = {
+        let mut st = inner.st.lock().unwrap();
+        if busy(&st) || inner.off.load(SeqCst) {
+            return Err("busy".into());
+        }
+        st.phase = "dupes";
+        st.dupes.clear();
+        st.done = None;
+        st.cancel = Arc::new(AtomicBool::new(false));
+        st.cancel.clone()
+    };
+    tell(cx, inner);
+    let (cx, inner) = (cx.clone(), inner.clone());
+    std::thread::spawn(move || {
+        let last = Cell::new(Instant::now());
+        let groups = dupes::find(&cancel, &|stage, n, of| {
+            if last.get().elapsed() >= Duration::from_millis(150) {
+                last.set(Instant::now());
+                cx.emit(ID, "dupesProgress", json!([stage, n, of]));
+            }
+        });
+        {
+            let mut st = inner.st.lock().unwrap();
+            let cancelled = cancel.load(SeqCst) || inner.off.load(SeqCst);
+            for group in groups.into_iter().filter(|_| !cancelled) {
+                let mut rows = Vec::new();
+                for (item, bytes) in group {
+                    st.ids += 1;
+                    let place = item.path().parent().unwrap_or(item.root()).to_path_buf();
+                    let modified = item.modified().and_then(|at| at.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs());
+                    rows.push(Row { id: st.ids, kind: "duplicates", title: "Duplicate files", name: Some(item.name()), place, checked: false, note: "", modified, items: vec![(item, bytes)] });
+                }
+                st.dupes.push(rows);
+            }
+            st.phase = "";
+            st.dupes_at = (!cancelled).then(now);
+        }
+        tell(&cx, &inner);
+    });
+    Ok(())
+}
+
+/// Explorer, with the file or folder selected in its parent.
+fn select_in_explorer(path: &Path) {
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+}
+
+/// What a clean leaves in a list of rows: the files that went are no longer there, and what stayed is shown again, unticked.
+fn settle_rows(rows: &mut Vec<Row>, ids: &[u32], gone: &HashSet<PathBuf>, stayed: &HashSet<PathBuf>) {
+    for row in rows.iter_mut().filter(|r| ids.contains(&r.id)) {
+        row.items.retain(|(item, _)| !gone.contains(item.path()));
+        if row.items.iter().any(|(item, _)| stayed.contains(item.path())) {
+            row.checked = false;
+            row.note = "left";
+        }
+    }
+    rows.retain(|r| !r.items.is_empty());
 }
 
 /// Reads what every target has to offer. Nothing is removed. `automatic` is
@@ -211,7 +344,11 @@ fn clean(cx: &Ctx, inner: &Arc<Inner>, ids: &[u32]) -> Result<(), String> {
         if busy(&st) {
             return Err("busy".into());
         }
-        let work: Vec<_> = st.rows.iter().chain(&st.left).filter(|r| ids.contains(&r.id)).flat_map(|r| r.items.clone()).collect();
+        // A group of identical files keeps at least one: the page cannot ask for all of them.
+        if st.dupes.iter().any(|g| g.iter().all(|r| ids.contains(&r.id))) {
+            return Err("keep one copy of every file".into());
+        }
+        let work: Vec<_> = st.rows.iter().chain(&st.left).chain(st.dupes.iter().flatten()).filter(|r| ids.contains(&r.id)).flat_map(|r| r.items.clone()).collect();
         if work.is_empty() {
             return Err("nothing of the list is ticked".into());
         }
@@ -260,17 +397,12 @@ fn clean(cx: &Ctx, inner: &Arc<Inner>, ids: &[u32]) -> Result<(), String> {
         {
             let mut st = inner.st.lock().unwrap();
             let st = &mut *st;
-            for rows in [&mut st.rows, &mut st.left] {
-                for row in rows.iter_mut().filter(|r| ids.contains(&r.id)) {
-                    row.items.retain(|(item, _)| !gone.contains(item.path()));
-                    // What stayed is shown again, unticked, for the user to see why.
-                    if row.items.iter().any(|(item, _)| stayed.contains(item.path())) {
-                        row.checked = false;
-                        row.note = "left";
-                    }
-                }
-                rows.retain(|r| !r.items.is_empty());
+            settle_rows(&mut st.rows, &ids, &gone, &stayed);
+            settle_rows(&mut st.left, &ids, &gone, &stayed);
+            for group in &mut st.dupes {
+                settle_rows(group, &ids, &gone, &stayed);
             }
+            st.dupes.retain(|g| g.len() > 1);
             st.phase = "";
             st.done = Some(done);
             st.bin = bin;
@@ -428,6 +560,7 @@ impl Feature for Cleaner {
         self.0.stop_wait.store(true, SeqCst);
         // A scan or a clean stops at its next file. An uninstaller that is open is the user's to finish.
         self.0.st.lock().unwrap().cancel.store(true, SeqCst);
+        self.0.disk.lock().unwrap().cancel.store(true, SeqCst);
     }
 
     fn settings_changed(&self, cx: &Ctx, _settings: &Value) {
@@ -438,7 +571,7 @@ impl Feature for Cleaner {
         let inner = &self.0;
         let row_place = |id: u64| {
             let st = inner.st.lock().unwrap();
-            st.rows.iter().chain(&st.left).find(|r| u64::from(r.id) == id).map(|r| r.place.clone())
+            st.rows.iter().chain(&st.left).chain(st.dupes.iter().flatten()).find(|r| u64::from(r.id) == id).map(|r| r.place.clone())
         };
         match method {
             "state" => return Ok(snapshot(inner)),
@@ -447,6 +580,21 @@ impl Feature for Cleaner {
                 std::thread::spawn(move || scan(&cx, &inner, false));
             }
             "cancel" => inner.st.lock().unwrap().cancel.store(true, SeqCst),
+            "dupes" => find_dupes(cx, inner)?,
+
+            // The disk analyzer: the fixed drives, a scan of one, and a node shown in Explorer (by its number).
+            "diskDrives" => return Ok(json!({ "drives": disk::drives(), "home": notch_core::win::home_dir().to_string_lossy() })),
+            "disk" => {
+                tell_disk(cx, inner);
+            }
+            "diskScan" => disk_scan(cx, inner, args["root"].as_str().unwrap_or_default())?,
+            "diskCancel" => inner.disk.lock().unwrap().cancel.store(true, SeqCst),
+            "diskReveal" => {
+                let path = args["id"].as_u64().and_then(|id| inner.disk.lock().unwrap().nodes.get(id as usize).map(|n| n.path.clone()));
+                if let Some(path) = path {
+                    select_in_explorer(&path);
+                }
+            }
             "clean" => {
                 let ids: Vec<u32> = serde_json::from_value(args["ids"].clone()).unwrap_or_default();
                 clean(cx, inner, &ids)?;

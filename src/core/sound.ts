@@ -1,6 +1,6 @@
 // The sound engine. Every sound is rendered in code at preload (src/core/synth.ts,
 // docs/ARCHITECTURE.md §10); there are no audio files. Default volume 0.12, slider
-// range 0–0.2, and several sounds may overlap.
+// range 0–0.5, and several sounds may overlap.
 // A file of the user's own in the sounds folder (src-tauri/src/sounds.rs) replaces a
 // sound; one that does not decode falls back to the built-in one.
 
@@ -106,7 +106,7 @@ class SoundEngine {
   }
 
   setVolume(v: number) {
-    this.volume = Math.max(0, Math.min(0.2, v));
+    this.volume = Math.max(0, Math.min(0.5, v));
     if (this.master) this.master.gain.value = this.volume;
   }
 
@@ -114,8 +114,11 @@ class SoundEngine {
     this.enabled = on;
   }
 
+  /** The microphone or camera is in use (huds-power): nothing plays. */
+  hushed = false;
+
   play(name: SoundName | string) {
-    if (!this.enabled) return;
+    if (!this.enabled || this.hushed) return;
     const ctx = this.ctx;
     const master = this.master;
     const buf = this.buffers.get(name);

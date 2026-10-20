@@ -11,6 +11,7 @@ import { Bridge } from "../core/bridge";
 import { h, svg } from "./dom";
 import { ICONS } from "../ui/icons";
 import { N_, t } from "../i18n/i18n";
+import { mathml } from "./math";
 
 const STRINGS = {
   copy: N_("Copy"),
@@ -24,6 +25,8 @@ export type Block =
   /** `prefix` is "•" or "1."; `indent` the nesting level, from 0. */
   | { kind: "item"; prefix: string; text: string; indent: number }
   | { kind: "quote"; text: string }
+  /** A formula on its own: $$ ... $$ or \[ ... \]. */
+  | { kind: "math"; tex: string }
   | { kind: "rule" };
 
 const isRule = (s: string) => s === "---" || s === "***" || s === "___";
@@ -44,6 +47,27 @@ export function parseMarkdown(input: string): Block[] {
       const code: string[] = [];
       for (i++; i < lines.length && !lines[i].startsWith("```"); i++) code.push(lines[i]);
       blocks.push({ kind: "code", lang, code: code.join("\n") });
+      i++;
+      continue;
+    }
+
+    // A formula block: $$ ... $$ or \[ ... \], on one line or several.
+    const open = /^\s*(\$\$|\\\[)/.exec(line);
+    if (open) {
+      const close = open[1] === "$$" ? "$$" : "\\]";
+      let rest = line.slice(open[0].length);
+      const tex: string[] = [];
+      for (;;) {
+        const end = rest.indexOf(close);
+        if (end >= 0) {
+          tex.push(rest.slice(0, end));
+          break;
+        }
+        tex.push(rest);
+        if (++i >= lines.length || tex.length > 40) break;
+        rest = lines[i];
+      }
+      blocks.push({ kind: "math", tex: tex.join(" ").trim() });
       i++;
       continue;
     }
@@ -91,7 +115,7 @@ export function parseMarkdown(input: string): Block[] {
     for (i++; i < lines.length; i++) {
       const next = lines[i];
       const s = next.trim();
-      if (!s || next.startsWith("#") || next.startsWith("```") || isQuote(s) || isBullet(s) || isRule(s) || ordered(s)) break;
+      if (!s || next.startsWith("#") || next.startsWith("```") || s.startsWith("$$") || s.startsWith("\\[") || isQuote(s) || isBullet(s) || isRule(s) || ordered(s)) break;
       para.push(next);
     }
     blocks.push({ kind: "paragraph", text: para.join("\n") });
@@ -104,6 +128,7 @@ export function parseMarkdown(input: string): Block[] {
 export type Inline =
   | { kind: "text"; text: string }
   | { kind: "code"; text: string }
+  | { kind: "math"; tex: string }
   | { kind: "strong"; children: Inline[] }
   | { kind: "em"; children: Inline[] }
   /** `url` is null when the target is not a web address: the text stays, the link goes. */
@@ -114,7 +139,7 @@ export type Inline =
  * comes first. No lookbehind: older WebKitGTK builds reject it, and one bad
  * regex literal would take the whole island down with it.
  */
-const INLINE = /`([^`\n]+)`|\*\*([^*]+?)\*\*|__([^_]+?)__|\*([^*\s][^*]*?)\*|_([^_\s][^_]*?)_(?!\w)|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+const INLINE = /`([^`\n]+)`|\*\*([^*]+?)\*\*|__([^_]+?)__|\*([^*\s][^*]*?)\*|_([^_\s][^_]*?)_(?!\w)|\[([^\]\n]+)\]\(([^)\s]+)\)|\\\((.+?)\\\)|\$(?=[^\s$])([^$\n]*?[^\s$])\$(?!\d)/g;
 
 const isWordChar = (c: string | undefined) => c != null && /\w/.test(c);
 
@@ -148,6 +173,7 @@ export function parseInline(text: string): Inline[] {
     pushText(text.slice(at, m.index));
     at = m.index + m[0].length;
     if (m[1] != null) out.push({ kind: "code", text: m[1] });
+    else if (m[8] != null || m[9] != null) out.push({ kind: "math", tex: (m[8] ?? m[9]).trim() });
     else if (m[6] != null) out.push({ kind: "link", url: safeWebUrl(m[7]), children: parseInline(m[6]) });
     else if (m[2] != null || m[3] != null) out.push({ kind: "strong", children: parseInline(m[2] ?? m[3]) });
     else out.push({ kind: "em", children: parseInline(m[4] ?? m[5]) });
@@ -164,6 +190,9 @@ function appendInline(into: HTMLElement, nodes: Inline[]) {
         break;
       case "code":
         into.append(h("code", { class: "md-code", text: node.text }));
+        break;
+      case "math":
+        into.append(mathOrCode(node.tex, false));
         break;
       case "strong":
       case "em": {
@@ -189,6 +218,20 @@ function appendInline(into: HTMLElement, nodes: Inline[]) {
       }
     }
   }
+}
+
+/** The formula as MathML; what cannot be drawn stays as its source. */
+function mathOrCode(tex: string, display: boolean): Element {
+  try {
+    return mathml(tex, display);
+  } catch {
+    return h("code", { class: "md-code", text: tex });
+  }
+}
+
+/** A text or code file as a card: the code block with its copy button. */
+export function codeCard(code: string): HTMLElement {
+  return render({ kind: "code", lang: "", code });
 }
 
 function inline(text: string, into: HTMLElement) {
@@ -293,6 +336,8 @@ function render(block: Block): HTMLElement {
       inline(block.text, text);
       return h("div", { class: "md-quote" }, h("i"), text);
     }
+    case "math":
+      return h("div", { class: "md-math", style: "overflow-x:auto;padding:2px 0" }, mathOrCode(block.tex, true));
     case "rule":
       return h("hr", { class: "md-rule" });
   }

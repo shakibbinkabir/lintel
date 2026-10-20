@@ -13,11 +13,13 @@
 
 pub(crate) mod cli;
 pub(crate) mod headless;
+pub(crate) mod mcp;
 pub(crate) mod program;
 pub(crate) mod scan;
 pub(crate) mod tasks;
 pub(crate) mod text;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -104,6 +106,7 @@ pub struct Turn {
 
 impl Chat {
     pub fn reset(&self) {
+        mcp::deny_all();
         // A CLI still writing its answer is ended: nobody will read it.
         stop_answer();
         let mut c = self.inner.lock().unwrap();
@@ -148,8 +151,18 @@ impl Chat {
 /// has one worth using (identity.rs), and only claims web search where the
 /// provider runs it (Claude).
 pub fn system_prompt(web_search: bool) -> String {
-    system_prompt_for(crate::identity::first_name(), web_search)
+    let mut prompt = system_prompt_for(crate::identity::first_name(), web_search);
+    // Opt-in (Settings → Chat → Today's agenda): today's events go to the chat provider.
+    if AGENDA.load(Ordering::Relaxed) {
+        if let Some(agenda) = notch_feat_calendar::agenda_today() {
+            prompt.push_str(&format!("\n\nThe user's calendar today (use it only when asked about their day):\n{agenda}"));
+        }
+    }
+    prompt
 }
+
+/// "Today's agenda" is on in the chat's settings; set at the start of every turn.
+static AGENDA: AtomicBool = AtomicBool::new(false);
 
 fn system_prompt_for(first_name: Option<&str>, web_search: bool) -> String {
     let opening = match first_name {
@@ -241,13 +254,15 @@ pub async fn send(
         return start_task(app, query, folder);
     }
     let context = context.map(checked_context).transpose()?;
+    let agenda = settings.features.get("chat").and_then(|c| c.get("calendarAgenda")).and_then(Value::as_bool);
+    AGENDA.store(agenda == Some(true), Ordering::Relaxed);
     let provider = settings.chat_provider.as_str();
     if provider == CLI {
         return ask_cli(app, chat, settings, query, context).await;
     }
     let model = model_for(settings, provider);
     if provider == ANTHROPIC || provider.is_empty() {
-        return claude::send(chat, &model, query, context).await;
+        return claude::send(app, chat, settings, &model, query, context).await;
     }
     if let Some(p) = openai_compat::provider(provider) {
         return openai_compat::send(chat, p, &model, query, context).await;
@@ -272,8 +287,10 @@ pub async fn models(settings: &Settings, provider: &str) -> Result<Vec<ModelInfo
         return Ok(found.iter().map(|c| ModelInfo { id: c.id.into(), label: c.name.into() }).collect());
     }
     if provider == ANTHROPIC {
-        let key = secrets::get(claude::KEY).ok_or_else(no_key)?;
-        return claude::models(&key).await;
+        if claude::gateway(settings)?.is_none() && secrets::get(claude::KEY).is_none() {
+            return Err(no_key());
+        }
+        return claude::models(settings).await;
     }
     if let Some(p) = openai_compat::provider(provider) {
         let key = secrets::get(p.key).ok_or_else(no_key)?;
@@ -292,6 +309,7 @@ static ANSWERING: Mutex<Option<Arc<program::Handle>>> = Mutex::new(None);
 
 /// Stop, from the chat view: ends the CLI that is answering, if one is.
 pub fn stop_answer() {
+    mcp::deny_all();
     if let Some(run) = ANSWERING.lock().unwrap().as_ref() {
         run.cancel();
     }
@@ -421,6 +439,11 @@ pub async fn ask(what: &str, arg: &str) -> Option<Result<Value, String>> {
             if let Ok(id) = arg.parse() {
                 tasks::cancel(id);
             }
+            Ok(Value::Null)
+        }
+        "chat:mcp-list" => Ok(json!(mcp::list())),
+        "chat:mcp-answer" => {
+            mcp::answer(arg);
             Ok(Value::Null)
         }
         "github:pulse" => crate::github::pulse_through_gh().await,

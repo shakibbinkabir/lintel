@@ -47,6 +47,8 @@ pub struct Settings {
     pub level_percent: bool,
     /// The time and the date on the resting strip.
     pub strip_clock: bool,
+    /// The agents count and the plan limits on the resting strip.
+    pub strip_stats: bool,
     /// The section the island opens on when the strip shows nothing of its own
     /// (`<feature>.<id>`); empty: the home view.
     pub open_on: String,
@@ -71,6 +73,8 @@ pub struct Settings {
     pub island_spot: Option<IslandSpot>,
     pub autostart: bool,
     pub hooks_installed: bool,
+    /// Another session's finish or error opens its card for a moment (off: a badge only).
+    pub peek_finished: bool,
     /// Claude model used by the chat. Changeable in the settings window.
     pub model: String,
     /// Show the Claude plan pill (5 h and weekly limits) in the island's header.
@@ -136,6 +140,7 @@ impl Default for Settings {
             key_jumps: true,
             level_percent: true,
             strip_clock: false,
+            strip_stats: false,
             open_on: String::new(),
             hover_enlarge: false,
             home_cards: "both".into(),
@@ -153,6 +158,7 @@ impl Default for Settings {
             island_spot: None,
             autostart: false,
             hooks_installed: false,
+            peek_finished: false,
             model: default_model(),
             show_plan_in_notch: false,
             plan_relay_installed: false,
@@ -429,6 +435,7 @@ mod tests {
   "keyJumps": false,
   "levelPercent": false,
   "stripClock": true,
+  "stripStats": true,
   "openOn": "calendar.calendar",
   "hoverEnlarge": true,
   "homeCards": "now",
@@ -441,6 +448,7 @@ mod tests {
   "islandSpot": { "display": "at:0,0|ONE|1920x1080", "x": 700.0, "y": 500.0, "docked": false },
   "autostart": true,
   "hooksInstalled": true,
+  "peekFinished": true,
   "model": "some-model",
   "showPlanInNotch": true,
   "planRelayInstalled": true,
@@ -796,6 +804,7 @@ mod tests {
                 "keyJumps",
                 "levelPercent",
                 "stripClock",
+                "stripStats",
                 "openOn",
                 "hoverEnlarge",
                 "homeCards",
@@ -808,6 +817,7 @@ mod tests {
                 "islandSpot",
                 "autostart",
                 "hooksInstalled",
+                "peekFinished",
                 "model",
                 "showPlanInNotch",
                 "planRelayInstalled",

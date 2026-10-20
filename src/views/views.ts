@@ -20,9 +20,10 @@ import {
   PlanCard, buildPlanPill, claudePillVisible, codexPillVisible, planCardOpen, refreshCodexPlanUsage,
 } from "./usage";
 import { buildDiffCard } from "./diff";
+import { buildCodeView } from "./codeview";
 import { lastTextStep, parseDiffStep } from "../core/diff";
 import { BRAND } from "../core/brand";
-import { Bridge } from "../core/bridge";
+import { Bridge, type Decision } from "../core/bridge";
 import { byPointer } from "../core/approvals";
 import { featureOn } from "../core/registry";
 import { buildRecap } from "./recap";
@@ -56,7 +57,7 @@ export interface ViewActions {
    * The click on Allow or Deny, for the request the card was drawn for: one
    * that has left the card since is not answered by it. Only ever a click.
    */
-  decide(d: "allow" | "deny", requestId: string): void;
+  decide(d: Decision, requestId: string): void;
   /**
    * Answers the question Claude Code asked: question text → chosen label, or
    * the words typed under "Other…" for the questions listed in `other`.
@@ -418,6 +419,10 @@ function buildPill(task: AgentTask, actions: ViewActions) {
 function buildOverview(actions: ViewActions): ViewHost {
   /** The diff open in the detail card (a FileDiff id). */
   let activeDiffId: number | null = null;
+  /** The session code view (views/codeview.ts): open, pinned to a diff, or following the newest. */
+  let codeOpen = false;
+  let codePinned: number | null = null;
+  let codeFollow = false;
   const closeDiff = () => {
     if (activeDiffId == null) return;
     activeDiffId = null;
@@ -440,7 +445,16 @@ function buildOverview(actions: ViewActions): ViewHost {
   line.addEventListener("click", () => {
     const step = State.focusTask?.steps.at(-1);
     const diff = step ? parseDiffStep(step) : null;
-    if (!diff) return;
+    if (!diff) {
+      // Not on an edit: the code view, when the session has an edit or a command to show.
+      const task = State.focusTask;
+      if (!task || (!task.lastCommand && !State.sessionDiffs.get(task.id)?.length)) return;
+      actions.blip();
+      codeOpen = true;
+      codePinned = State.sessionDiffs.get(task.id)?.at(-1)?.id ?? null;
+      State.notify();
+      return;
+    }
     actions.blip();
     activeDiffId = diff.diffId;
     State.notify();
@@ -473,6 +487,7 @@ function buildOverview(actions: ViewActions): ViewHost {
     if (activeDiffId != null && (State.view !== "overview" || State.mode !== "expanded")) {
       activeDiffId = null;
     }
+    if (codeOpen && (State.view !== "overview" || State.mode !== "expanded")) codeOpen = false;
   });
   // Escape steps back out of the diff before it closes the island.
   window.addEventListener(
@@ -548,7 +563,7 @@ function buildOverview(actions: ViewActions): ViewHost {
     if (line.textContent !== text) line.textContent = text;
     const step = task.steps.at(-1);
     const busy = task.state === "working" || task.state === "thinking" || task.state === "searching";
-    line.className = ["focus-line", tone, busy && "shimmer", step && parseDiffStep(step) && "link"].filter(Boolean).join(" ");
+    line.className = ["focus-line", tone, busy && "shimmer", (step && parseDiffStep(step) || task.lastCommand || State.sessionDiffs.get(task.id)?.length) && "link"].filter(Boolean).join(" ");
     line.title = text;
     const project = task.sessionCwd?.split(/[\\/]/).filter(Boolean).pop();
     const kind = t(session ? sessionSubtitle(familyOf(task)) : (pillDefinition(task.id)?.subtitle ?? N_("Integration")));
@@ -583,6 +598,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         lastFocus = task?.id ?? null;
         detailOpen = false;
         activeDiffId = null;
+        codeOpen = false;
         cardKey = "";
         mode = null;
         clear(detailBody);
@@ -617,6 +633,28 @@ function buildOverview(actions: ViewActions): ViewHost {
               closeDiff();
             },
             open: (path) => void Bridge.openFileInVSCode(path),
+          }));
+        }
+      } else if (task && codeOpen) {
+        const all = State.sessionDiffs.get(task.id) ?? [];
+        const shown = (codeFollow ? null : all.find((d) => d.id === codePinned)) ?? all.at(-1) ?? null;
+        const key = `code~${task.id}~${shown?.id}~${task.lastCommand}~${codeFollow}`;
+        if (key !== cardKey) {
+          cardKey = key;
+          mode = "diff";
+          fill(detailBody, buildCodeView(shown, task.lastCommand, {
+            dismiss: () => {
+              actions.blip();
+              codeOpen = false;
+              State.notify();
+            },
+            open: (path) => void Bridge.openFileInVSCode(path),
+            follow: codeFollow,
+            setFollow: (on) => {
+              codeFollow = on;
+              State.notify();
+            },
+            lines: (path, from, count) => Bridge.sessionFileLines(task.sessionCwd ?? "", path, from, count),
           }));
         }
       } else if (task && !isSessionPill(task)) {
@@ -656,8 +694,8 @@ function buildOverview(actions: ViewActions): ViewHost {
       highlightRow(rows, State.cardSelection, State.cardSelection !== shownSelection);
       shownSelection = State.cardSelection;
 
-      // Twelve sessions at most, so eleven other pills: four fit, the rest by scrolling.
-      const others = State.otherTasks.slice(0, 11);
+      // Every other pill: four fit, the rest by scrolling.
+      const others = State.otherTasks;
       const pillKey = `${State.settings.showMascot}~${others.map((x) => `${x.id}:${x.color}`).join("|")}`;
       if (pillKey !== pillIds) {
         pillIds = pillKey;
@@ -724,9 +762,12 @@ function buildApproval(actions: ViewActions): ViewHost {
   // There is no key here: a permission card is answered by a click, never a key.
   let shownFor: string | null = null;
   let shownAt = 0;
-  const guarded = (d: "allow" | "deny") => (click?: MouseEvent) => {
+  const guarded = (d: Decision) => (click?: MouseEvent) => {
+    const pill = State.pendingApproval?.pillId;
     if (!byPointer(click) || !shownFor || performance.now() - shownAt < CLICK_GUARD_MS) return;
     actions.decide(d, shownFor);
+    // Change plan stops the turn: the change is typed in the session's terminal, brought forward.
+    if (d === "plan_change" && pill) actions.openSessionOf(pill);
   };
   // Two buttons, built once: rebuilding them between a mouse-down and a
   // mouse-up would swallow the click.
@@ -746,10 +787,20 @@ function buildApproval(actions: ViewActions): ViewHost {
     h("span", { class: "isl-gap" }),
     btn(tl("Deny"), "danger", guarded("deny")),
   );
+  // A plan (Claude Code's ExitPlanMode) is no tool to allow: the terminal's own
+  // choices, approved in auto mode or approving each edit, or changed.
+  const planRow = h(
+    "div",
+    { class: "isl-row" },
+    btn(tl("Auto mode"), "primary", guarded("plan_auto")),
+    btn(tl("Manual"), "secondary", guarded("plan_manual")),
+    h("span", { class: "isl-gap" }),
+    btn(tl("Change plan"), "secondary", guarded("plan_change")),
+  );
   // Tab does not stop on them either: a button no key can press shows no focus ring.
-  for (const b of row.querySelectorAll("button")) b.tabIndex = -1;
+  for (const b of [...row.querySelectorAll("button"), ...planRow.querySelectorAll("button")]) b.tabIndex = -1;
   const el = h("div", { class: "view" },
-    alertCard("warn", who, h("div", { class: "isl-code" }, command, where), row, foldButton(actions)));
+    alertCard("warn", who, h("div", { class: "isl-code" }, command, where), row, planRow, foldButton(actions)));
   return {
     el,
     sync() {
@@ -762,7 +813,10 @@ function buildApproval(actions: ViewActions): ViewHost {
       // Always is Claude Code's own rule: not for Codex, Copilot CLI or Muse Code.
       const claude = pending != null && !pending.family.startsWith("agent_");
       always.style.display = featureOn("chat-plus") && pending?.suggested && claude ? "" : "none";
-      whoRow(who, cardTask(), t("needs permission"), queueCount());
+      const plan = pending?.tool === "ExitPlanMode";
+      row.style.display = plan ? "none" : "";
+      planRow.style.display = plan ? "" : "none";
+      whoRow(who, cardTask(), plan ? t("has a plan ready") : t("needs permission"), queueCount());
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
@@ -1025,7 +1079,7 @@ function buildPlaceholder(title: Msg, sub: string): ViewHost {
 function buildSettings(actions: ViewActions): ViewHost {
   const soundSwitch = h("button", { class: "switch", onclick: () => actions.toggleSound() });
   const volume = h("input", {
-    type: "range", min: "0", max: "0.2", step: "0.005",
+    type: "range", min: "0", max: "0.5", step: "0.005",
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
   }) as HTMLInputElement;
   const autoLabel = h("span", {});

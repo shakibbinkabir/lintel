@@ -318,8 +318,9 @@ impl Recap {
             return;
         }
         let word = match decision {
-            "allow" | "always" => "allow",
-            "deny" => "deny",
+            // A plan card's choices (pipe.rs): a go-ahead, or a no.
+            "allow" | "always" | "plan_auto" | "plan_manual" => "allow",
+            "deny" | "plan_change" => "deny",
             _ => return,
         };
         self.history.decisions.push(Decision { agent, date: now, decision: word.to_string() });

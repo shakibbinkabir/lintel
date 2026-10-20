@@ -632,6 +632,17 @@ impl Feature for Capture {
                 let png = svc_shell::thumbnail(&path, 256).or_else(|_| std::fs::read(&path).map_err(|e| e.to_string()))?;
                 Ok(json!({ "url": format!("data:image/png;base64,{}", base64(&png)) }))
             }
+            // The text Windows reads in the whole capture, to the clipboard; "" when there is none.
+            "copy_ocr" => {
+                let png = std::fs::read(one(cx, &args)?.1).map_err(|e| e.to_string())?;
+                let lines = svc_capture::ocr(&svc_capture::decode_png(&png)?)?;
+                let text = lines.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("
+");
+                if !text.is_empty() {
+                    copy_text(&text)?;
+                }
+                Ok(json!(text.chars().count()))
+            }
             "copy" => {
                 let (_, path) = one(cx, &args)?;
                 let png = std::fs::read(&path).map_err(|e| e.to_string())?;
@@ -696,7 +707,9 @@ impl Feature for Capture {
             }
             // An OLE drag out of the island, on the UI thread, until the button is released.
             "drag" => {
-                let items = [Item::File(one(cx, &args)?.1)];
+                // A pin's file when the press was on a pin (`label`), else the capture by `id`.
+                let pinned = args["label"].as_str().and_then(|l| locked(&PINS).iter().find(|p| p.label == l).map(|p| p.shot.clone()));
+                let items = [Item::File(one(cx, &pinned.map_or(args.clone(), |id| json!({ "id": id })))?.1)];
                 let (done, effect) = mpsc::channel();
                 cx.app()
                     .run_on_main_thread(move || {
@@ -742,6 +755,16 @@ impl Feature for Capture {
                     pin.through = through;
                 }
                 cx.emit(ID, "pins", self.pins_now());
+                Ok(Value::Null)
+            }
+            // The wheel over a pin: it grows or shrinks about its centre.
+            "pin_zoom" => {
+                let (_, window) = self.pin_window(cx, &args)?;
+                let k = args["k"].as_f64().unwrap_or(1.0).clamp(0.5, 2.0);
+                let (size, at) = (window.outer_size().map_err(|e| e.to_string())?, window.outer_position().map_err(|e| e.to_string())?);
+                let (w, h) = (((size.width as f64 * k).round() as u32).clamp(60, 8000), ((size.height as f64 * k).round() as u32).clamp(60, 8000));
+                let _ = window.set_size(PhysicalSize::new(w, h));
+                let _ = window.set_position(PhysicalPosition::new(at.x + (size.width as i32 - w as i32) / 2, at.y + (size.height as i32 - h as i32) / 2));
                 Ok(Value::Null)
             }
             "pin_close" => {

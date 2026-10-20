@@ -76,8 +76,10 @@ jobs:
           path: release/lintel-${{ steps.meta.outputs.version }}-setup.exe
           if-no-files-found: error
 
-      # When the SignPath Foundation grants the project a certificate, the signing request
-      # goes here: it takes the artifact above, and the signed file replaces the one below.
+      # GitHub fills the asset "digest" (sha256:...) by itself on upload; the app's "Update now" checks the
+      # download against it, so the installer must keep the name lintel-<version>-setup.exe.
+      # A signing step goes here if the project obtains a certificate: it takes the artifact above,
+      # and the signed file replaces the one below.
 
       - name: Publish the GitHub release
         shell: bash

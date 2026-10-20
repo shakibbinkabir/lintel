@@ -37,4 +37,8 @@ Actions › Build › Run workflow builds the installer from any branch and keep
 
 ## Code signing
 
-Releases are unsigned until the SignPath Foundation grants the project a certificate (see the code signing policy in the README). When it does, the signing request is added to the release workflow at the marked place, and every signed installer needs its release approved in SignPath.
+Lintel's releases are not code-signed. The SignPath Foundation, which signs open-source projects for free, reviewed Lintel's application in October 2026 and declined it for now, because the project is still young: it looks for public signals such as stars, forks, contributors and outside mentions. Lintel may apply again later. A Microsoft Store version is being prepared; the Store signs the apps it distributes, so that version will be signed by Microsoft.
+
+Until then, every release is built on GitHub's own runner from the tagged source by the release workflow, and the release page lists the installer's SHA-256. Anyone can also build it from source. SmartScreen warns on an unsigned installer: choose "More info", then "Run anyway", if you trust the download.
+
+If a certificate is ever obtained, the signing step goes at the marked place in `.github/workflows/release.yml`, between the build artifact and the publish step.

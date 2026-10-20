@@ -38,6 +38,10 @@ export interface GitHubPulse {
   myPRs: GitHubPR[];
   toReview: GitHubPR[];
   mainCI: GitHubRepoCI[];
+  /** CI of the branch a session is on, when it is not the default one. */
+  branchCI?: GitHubRepoCI[];
+  /** The GitLab or Gitea host merged into this pulse, when one is set up. */
+  forgeHost?: string;
   fetchedAt: number;
 }
 
@@ -115,6 +119,9 @@ export function contributionColor(level: number): string {
 
 // ── Reading what Rust sent ────────────────────────────────────────────────────
 
+/** The forge host the last pulse came with; its links may open too. */
+let forgeHost: string | null = null;
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v != null;
 
 export function readPulse(data: Record<string, unknown>): GitHubPulse | null {
@@ -122,6 +129,7 @@ export function readPulse(data: Record<string, unknown>): GitHubPulse | null {
   if (!isObj(p) || !Array.isArray(p.myPRs) || !Array.isArray(p.toReview) || !Array.isArray(p.mainCI)) {
     return null;
   }
+  forgeHost = typeof p.forgeHost === "string" ? p.forgeHost : null;
   return p as unknown as GitHubPulse;
 }
 
@@ -203,7 +211,7 @@ export function shortRepo(repo: string): string {
 
 // ── Links ─────────────────────────────────────────────────────────────────────
 
-/** Only http(s) links to github.com open, like safeWebURL + the host check on macOS. */
+/** Only http(s) links to github.com (or the user's own forge host) open. */
 export function safeGitHubUrl(raw: string): string | null {
   let url: URL;
   try {
@@ -212,7 +220,7 @@ export function safeGitHubUrl(raw: string): string | null {
     return null;
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-  if (url.hostname !== "github.com") return null;
+  if (url.hostname !== "github.com" && url.hostname !== forgeHost) return null;
   return url.toString();
 }
 
@@ -238,11 +246,13 @@ export function lastWeeks(activity: GitHubActivity, n: number): ContributionDay[
   return activity.weeks.slice(Math.max(0, activity.weeks.length - n));
 }
 
-/** The last `n` days, oldest first. */
+/** The last `n` days, oldest first, graded against their own busiest day (0 stays 0). */
 export function lastDays(activity: GitHubActivity, n: number): ContributionDay[] {
   if (n <= 0) return [];
   const all = activity.weeks.flat();
-  return all.slice(Math.max(0, all.length - n));
+  const days = all.slice(Math.max(0, all.length - n));
+  const max = Math.max(0, ...days.map((d) => d.count));
+  return days.map((d) => ({ ...d, level: d.count > 0 ? Math.ceil((d.count / max) * 4) : 0 }));
 }
 
 /** One column of the grid: seven slots, Sunday first, null where a day is missing. */
@@ -309,4 +319,35 @@ export function gitHubAlert(events: GitHubEvent[]): GitHubAlert | null {
     }
   }
   return alert;
+}
+
+// ── A git push of a session ───────────────────────────────────────────────────
+
+export interface GitPush {
+  state: "pushing" | "pushed" | "failed";
+  at: number;
+}
+
+let gitPush: GitPush | null = null;
+
+/** Whether a shell command pushes: `git push`, `git -C dir push`, after a `&&` or `;`. */
+export function isGitPush(tool: string, input: Record<string, unknown>): boolean {
+  if (tool !== "Bash" && tool !== "PowerShell") return false;
+  const cmd = typeof input.command === "string" ? input.command : "";
+  return /(^\s*|[;&|(]\s*)git(\s+-\S+(\s+[^\s-]\S*)?)*\s+push(\s|$)/.test(cmd);
+}
+
+export function setGitPush(state: GitPush["state"] | null, now = Date.now()) {
+  gitPush = state ? { state, at: now } : null;
+}
+
+/** The push to show on the card: it fades two minutes after it ended, a stuck one after ten. */
+export function currentGitPush(now = Date.now()): GitPush | null {
+  if (!gitPush) return null;
+  const age = now - gitPush.at;
+  return age > (gitPush.state === "pushing" ? 600_000 : 120_000) ? null : gitPush;
+}
+
+export function gitPushWord(state: GitPush["state"]): string {
+  return state === "pushing" ? t("Pushing…") : state === "pushed" ? t("Pushed") : t("Push failed");
 }

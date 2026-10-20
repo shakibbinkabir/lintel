@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 notch-core = { path = "../core" }
 svc-inject = { path = "../svc-inject" }
+svc-input = { path = "../svc-input" }
 svc-shell = { path = "../svc-shell" }
 svc-windows = { path = "../svc-windows" }
 serde = { version = "1", features = ["derive"] }
@@ -21,10 +22,12 @@ windows = { version = "0.61", features = [
   "Win32_Globalization",
   "Win32_Graphics_Gdi",
   "Win32_Storage_FileSystem",
+  "Win32_System_Com",
   "Win32_System_LibraryLoader",
   "Win32_System_Power",
   "Win32_System_Shutdown",
   "Win32_System_SystemInformation",
+  "Win32_UI_Accessibility",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }

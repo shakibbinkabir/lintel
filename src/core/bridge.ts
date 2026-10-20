@@ -29,6 +29,9 @@ export interface BootInfo {
   hookPath: string;
 }
 
+/** A click on a permission card; a plan card (Claude Code's ExitPlanMode) has its own three. */
+export type Decision = "allow" | "deny" | "plan_auto" | "plan_manual" | "plan_change";
+
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
   /** The system's languages as the webview sees them, for Rust's own texts (i18n.rs). */
@@ -66,6 +69,7 @@ export const Bridge = {
   featureAction: (feature: string, id: string) => call<void>("feature_action", { feature, id }),
 
   reposition: () => call<void>("reposition"),
+  fitZoom: (dpr: number) => call<boolean>("fit_zoom", { dpr }),
 
   /** Every display, for the placement rules of a dragged island (src/island/place.ts). */
   islandDisplays: () => call<import("../island/place").Display[]>("island_displays"),
@@ -83,6 +87,10 @@ export const Bridge = {
   customSounds: (names: readonly string[]) => call<string[]>("custom_sounds", { names }),
   /** The user's file for one sound, as raw bytes. */
   customSound: (name: string) => call<ArrayBuffer>("custom_sound", { name }),
+  /** Your own file for one sound (raw bytes), replacing the old one. */
+  setCustomSound: (name: string, ext: string, bytes: Uint8Array) =>
+    IS_TAURI ? invoke<void>("set_custom_sound", bytes, { headers: { name, ext } }).then(() => true, () => false) : Promise.resolve(false),
+  resetCustomSound: (name: string) => call<void>("reset_custom_sound", { name }),
   revealSoundsFolder: () => call<void>("reveal_sounds_folder"),
   /** Tells the island to read the sounds folder again ("sounds-changed"). */
   reloadSounds: () => call<void>("reload_sounds"),
@@ -128,6 +136,11 @@ export const Bridge = {
   hooksApply: (install: boolean, fingerprint: string, launch: boolean | null = null) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint, launch }),
   /** The relay started the app (it was closed when an agent began to work), not the user. */
+  /** Lines of a file the session changed (inside its folder only), for the code view. */
+  sessionFileLines: (cwd: string, path: string, from: number, count: number) =>
+    call<string[] | null>("session_file_lines", { cwd, path, from, count }),
+  /** Claude Code sessions already running at launch: [session id, folder]. */
+  runningSessions: () => call<[string, string][]>("running_sessions"),
   autoLaunched: () => call<boolean>("auto_launched"),
 
   // ── Other agents (Gemini CLI, Codex, Cursor…) ─────────────────────────────
@@ -154,7 +167,7 @@ export const Bridge = {
    */
   codexPlanUsage: () => call<unknown>("codex_plan_usage"),
 
-  approvalDecision: (requestId: string, decision: "allow" | "deny") =>
+  approvalDecision: (requestId: string, decision: Decision) =>
     call<void>("approval_decision", { requestId, decision }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
@@ -194,7 +207,7 @@ export const Bridge = {
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** The GitHub card is on screen: refetch that part if it is stale. */
-  githubRefresh: (section: "pulse" | "activity") => call<void>("github_refresh", { section }),
+  githubRefresh: (section: "pulse" | "activity", dirs: string[] = []) => call<void>("github_refresh", { section, dirs }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 

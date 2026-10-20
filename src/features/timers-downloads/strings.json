@@ -1,5 +1,17 @@
 {
   "strings": {
+    "Sleep": {
+      "en": "Sleep"
+    },
+    "Shut down": {
+      "en": "Shut down"
+    },
+    "Shut down now?": {
+      "en": "Shut down now?"
+    },
+    "Arm": {
+      "en": "Arm"
+    },
     "Time's up": {
       "en": "Time's up",
       "zh-Hans": "时间到",

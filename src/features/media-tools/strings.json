@@ -1,5 +1,7 @@
 {
   "strings": {
+    "MP3": { "en": "MP3" },
+    "Save as MP3": { "en": "Save as MP3" },
     "Compress": {
       "en": "Compress",
       "zh-Hans": "压缩",

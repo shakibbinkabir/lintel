@@ -11,12 +11,14 @@
 // Both exist only while their switch is on, so with every tool off there is no
 // hook, no timer and no thread.
 
+pub mod drag;
 pub mod follow;
 pub mod guard;
 pub mod layout;
 
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use guard::Which;
 use notch_core::{Ctx, Feature, Group, Manifest, ShortcutDef, Use};
@@ -57,12 +59,14 @@ static MANIFEST: Manifest = Manifest {
         key("right-third", "Right third", None),
         key("left-two-thirds", "Left two thirds", None),
         key("right-two-thirds", "Right two thirds", None),
+        key("pin", "Keep the window above the others (again: let it go)", Some("Ctrl+Alt+Super+P")),
+        key("unpin-all", "Let every pinned window go", None),
         key("pointer-next-display", "Send the pointer to the next display", None),
     ],
     tray: &[],
     // Gaps in pixels at 100 %, margin in percent, delays in milliseconds.
     // ignoredApps: program names (game.exe). closeMode: "hold" | "double".
-    defaults: r#"{ "cycleThirds": true, "windowGap": 0, "screenGap": 0, "margin": 5, "ignoredApps": [], "follow": false, "followDelay": 250, "closeAltF4": false, "closeCtrlW": false, "closeMode": "hold", "closeHoldMs": 800, "closeIntervalMs": 600 }"#,
+    defaults: r#"{ "cycleThirds": true, "windowGap": 0, "screenGap": 0, "margin": 5, "ignoredApps": [], "follow": false, "followDelay": 250, "closeAltF4": false, "closeCtrlW": false, "closeMode": "hold", "closeHoldMs": 800, "closeIntervalMs": 600, "screenGapLeft": -1, "screenGapTop": -1, "screenGapRight": -1, "screenGapBottom": -1, "edgeSnap": false, "dragModifier": "off", "zoneKey": "shift", "desktopStrip": false }"#,
 };
 
 // ── Settings into configuration ───────────────────────────────────────────────
@@ -76,6 +80,8 @@ fn options(s: &Value) -> layout::Options {
     layout::Options {
         window_gap: number(s, "windowGap", 0..=128, 0) as i32,
         screen_gap: number(s, "screenGap", 0..=128, 0) as i32,
+        // -1: the same as the screen gap.
+        edge_gaps: ["screenGapLeft", "screenGapTop", "screenGapRight", "screenGapBottom"].map(|k| s[k].as_i64().filter(|v| (0..=128).contains(v)).map(|v| v as i32)),
         margin: number(s, "margin", 0..=25, 5) as i32,
         cycle: s["cycleThirds"] != false,
     }
@@ -87,8 +93,12 @@ fn exe_name(path: &str) -> String {
 
 /// An app of the list is in front: the placements leave it alone.
 fn ignored(s: &Value) -> bool {
-    let Some(front) = svc_windows::front().map(|w| exe_name(&w.exe)).filter(|exe| !exe.is_empty()) else { return false };
-    s["ignoredApps"].as_array().into_iter().flatten().filter_map(Value::as_str).any(|app| app.trim().eq_ignore_ascii_case(&front))
+    svc_windows::front().is_some_and(|w| ignores(s, &w.exe))
+}
+
+fn ignores(s: &Value, exe: &str) -> bool {
+    let front = exe_name(exe);
+    !front.is_empty() && s["ignoredApps"].as_array().into_iter().flatten().filter_map(Value::as_str).any(|app| app.trim().eq_ignore_ascii_case(&front))
 }
 
 // ── The feature ───────────────────────────────────────────────────────────────
@@ -100,6 +110,28 @@ struct Running {
     follow: Mutex<Option<(u64, follow::Follow)>>,
     /// Close protection, with what it guards.
     guard: Mutex<Option<(guard::Config, guard::Guard)>>,
+    /// Snapping by dragging, with what it runs on.
+    drag: Mutex<Option<(drag::Config, drag::Drag)>>,
+    /// The windows kept above the others from here, let go when the feature stops.
+    pinned: Mutex<Vec<isize>>,
+    /// A switch of virtual desktop is under way.
+    switching: Arc<AtomicBool>,
+}
+
+impl Running {
+    fn unpin_all(&self) {
+        for hwnd in lock(&self.pinned).drain(..) {
+            if layout::is_topmost(hwnd) {
+                layout::set_topmost(hwnd, false);
+            }
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.unpin_all();
+    }
 }
 
 #[derive(Default)]
@@ -137,7 +169,7 @@ fn closing(cx: &Ctx, event: guard::Event, hold: bool) {
 }
 
 /// Starts, stops or restarts the two tools that run, to match the settings.
-fn tools(cx: &Ctx, run: &Running, s: &Value) {
+fn tools(cx: &Ctx, run: &Arc<Running>, s: &Value) {
     let delay = (s["follow"] == true).then(|| number(s, "followDelay", 100..=3000, 250));
     let mut follow = lock(&run.follow);
     if follow.as_ref().map(|f| f.0) != delay {
@@ -145,6 +177,42 @@ fn tools(cx: &Ctx, run: &Running, s: &Value) {
         *follow = None;
         *follow = delay.map(|ms| (ms, follow::start(ms, |_| true)));
     }
+
+    let modifier: Vec<i32> = match s["dragModifier"].as_str() {
+        Some("alt") => vec![0x12],
+        Some("ctrl-alt") => vec![0x11, 0x12],
+        Some("shift-alt") => vec![0x10, 0x12],
+        _ => vec![],
+    };
+    let zones = match s["zoneKey"].as_str() {
+        Some("shift") => 0x10,
+        Some("ctrl") => 0x11,
+        Some("alt") => 0x12,
+        _ => 0,
+    };
+    let config = (s["edgeSnap"] == true || !modifier.is_empty()).then(|| drag::Config { edge: s["edgeSnap"] == true, modifier, zones });
+    let mut dragging = lock(&run.drag);
+    if dragging.as_ref().map(|d| &d.0) != config.as_ref() {
+        *dragging = None;
+        *dragging = config.map(|config| {
+            let (a, b) = (Arc::downgrade(run), Arc::downgrade(run));
+            let (cx_snap, cx_skip) = (cx.clone(), cx.clone());
+            let hooks = drag::Hooks {
+                unsnap: Box::new(move |hwnd| Weak::upgrade(&a).and_then(|r| r.layout.unsnap(hwnd))),
+                snap: Box::new(move |hwnd, id| {
+                    if let Some(r) = Weak::upgrade(&b) {
+                        r.layout.apply(hwnd, id, &options(&cx_snap.settings(ID)));
+                    }
+                }),
+                skip: Box::new(move |hwnd| {
+                    let s = cx_skip.settings(ID);
+                    svc_windows::windows().into_iter().find(|w| w.hwnd == hwnd).is_some_and(|w| ignores(&s, &w.exe))
+                }),
+            };
+            (config.clone(), drag::start(config, hooks))
+        });
+    }
+    drop(dragging);
 
     let keys: Vec<(u16, Which)> = [("closeAltF4", 0x73, Which::AltF4), ("closeCtrlW", 0x57, Which::CtrlW)]
         .into_iter()
@@ -206,6 +274,26 @@ impl Feature for WindowLayout {
                 let s = cx.settings(ID);
                 let result = if pressed && ignored(&s) {
                     "ignored"
+                } else if action == "pin" {
+                    match layout::target(!pressed) {
+                        Some(hwnd) => {
+                            let on = !layout::is_topmost(hwnd);
+                            if !layout::set_topmost(hwnd, on) {
+                                "failed"
+                            } else {
+                                let mut pinned = lock(&run.pinned);
+                                pinned.retain(|h| *h != hwnd);
+                                if on {
+                                    pinned.push(hwnd);
+                                }
+                                if on { "pinned" } else { "unpinned" }
+                            }
+                        }
+                        None => "no-window",
+                    }
+                } else if action == "unpin-all" {
+                    run.unpin_all();
+                    "unpinned"
                 } else if action == "pointer-next-display" {
                     if layout::pointer_to_next_display() { "done" } else { "one-display" }
                 } else {
@@ -221,6 +309,32 @@ impl Feature for WindowLayout {
                     cx.emit(ID, "result", out.clone());
                 }
                 Ok(out)
+            }
+            // The virtual desktops: names (null: not named), the one in front.
+            "desktops" => {
+                let (names, current) = svc_windows::desktops();
+                Ok(json!({ "names": names, "current": current, "on": cx.settings(ID)["desktopStrip"] == true }))
+            }
+            // Switches to desktop `to` with the system's own keys (Win+Ctrl+Left/Right), one step at a time.
+            "desktop" => {
+                let (names, current) = svc_windows::desktops();
+                let to = args["to"].as_u64().unwrap_or(0) as usize;
+                if to >= names.len() || to == current || run.switching.swap(true, Relaxed) {
+                    return Ok(json!(false));
+                }
+                let arrow = if to > current { 0x27 } else { 0x25 };
+                let (cx, switching) = (cx.clone(), run.switching.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..to.abs_diff(current) {
+                        svc_input::inject_keys(&[(0x5B, true), (0xA2, true), (arrow, true), (arrow, false), (0xA2, false), (0x5B, false)]);
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let (_, now) = svc_windows::desktops();
+                    switching.store(false, Relaxed);
+                    cx.emit(ID, "desktop", json!({ "current": now }));
+                });
+                Ok(json!(true))
             }
             // The tiles, for the section's grid: one table for what is drawn and what is done.
             "tiles" => Ok(json!(layout::TILES.iter().map(|t| json!({ "id": t.0, "name": t.1, "share": t.2 })).collect::<Vec<_>>())),

@@ -4,6 +4,7 @@
 
 import "./style.css";
 import { defineFeature, type FeatureCtx } from "../../core/feature";
+import { State } from "../../core/state";
 import { h } from "../../views/dom";
 import { t } from "../../i18n/i18n";
 import { icon } from "../../ui/icons";
@@ -64,9 +65,12 @@ export default defineFeature({
         row(cx.t("Pointer interval"), pick("jiggleMinutes", [["1", "1 min"], ["2", "2 min"], ["5", "5 min"], ["10", "10 min"], ["15", "15 min"]])),
         row(cx.t("Start with an external display"), toggle(s.autoExternal === true, set("autoExternal")), cx.t("A session runs while a monitor other than the built-in one is connected.")),
         row(cx.t("Start on power"), toggle(s.autoPower === true, set("autoPower")), cx.t("A session runs while the charger is plugged in.")),
+        row(cx.t("Start while agents work"), toggle(s.autoAgents === true, set("autoAgents")), cx.t("A session runs while an agent works, and for a few quiet minutes after.")),
+        row(cx.t("Quiet minutes after agents"), pick("agentsMinutes", [["0", "0"], ["2", "2 min"], ["5", "5 min"], ["10", "10 min"], ["30", "30 min"]])),
         row(cx.t("Need every condition"), toggle(s.autoAll === true, set("autoAll")), cx.t("Off: any one of them is enough.")),
         h("div", { class: "section-title", text: cx.t("Displays") }),
         row(cx.t("Dim below the minimum"), toggle(s.extraDimming !== false, set("extraDimming")), cx.t("The lowest part of a slider darkens the picture over the backlight's lowest step.")),
+        row(cx.t("Brightness keys move every display"), toggle(s.linkKeys === true, set("linkKeys")), cx.t("The shortcuts step all displays by the same amount, keeping the gaps between them.")),
         row(cx.t("Move displays together"), toggle(s.linkDisplays === true, set("linkDisplays")), cx.t("Moving one slider moves the others by the same amount.")),
         radios.bluetooth !== "none" || radios.wifi !== "none" ? h("div", { class: "section-title", text: cx.t("Sleep") }) : null,
         radios.bluetooth !== "none"
@@ -106,7 +110,16 @@ export default defineFeature({
         cx.island.activityChanged("keepawake");
       }
     });
+    // Read-only: whether an agent works, told to Rust on each change (it decides if the condition is on).
+    // debt: reads State directly (as agent-usage does); a host event would be cleaner.
+    let working = false;
+    const sync = () => {
+      const w = State.tasks.some((t) => t.state !== "idle" && t.state !== "sleeping");
+      if (w !== working) void cx.call("agents", { working: (working = w) });
+    };
+    sync();
     const offs = [
+      State.subscribe(sync),
       cx.on<SessionState>("session", (s) => {
         session = s;
         cx.island.activityChanged("keepawake");

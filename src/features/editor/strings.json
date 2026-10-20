@@ -854,6 +854,24 @@
       "pt-BR": "Captura com rolagem",
       "ru": "Прокручиваемый снимок",
       "id": "Tangkapan bergulir"
+    },
+    "Curved arrow": {
+      "en": "Curved arrow"
+    },
+    "Ruler": {
+      "en": "Ruler"
+    },
+    "Spotlight": {
+      "en": "Spotlight"
+    },
+    "Magnifier": {
+      "en": "Magnifier"
+    },
+    "Fill the shapes": {
+      "en": "Fill the shapes"
+    },
+    "Add space": {
+      "en": "Add space"
     }
   }
 }

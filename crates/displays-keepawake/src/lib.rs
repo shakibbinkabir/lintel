@@ -55,7 +55,8 @@ static MANIFEST: Manifest = Manifest {
     tray: &[],
     // minutes: the last duration picked (0 = until stopped); batteryLimit: a session ends on battery at or below it (0 = never)
     defaults: r#"{ "minutes": 60, "allowDisplaySleep": false, "batteryLimit": 10, "jiggle": false, "jiggleMinutes": 5,
-        "autoExternal": false, "autoPower": false, "autoAll": false,
+        "autoExternal": false, "autoPower": false, "autoAll": false, "autoAgents": false, "agentsMinutes": 5,
+        "linkKeys": false,
         "extraDimming": true, "linkDisplays": false,
         "bluetoothSleep": false, "wifiSleep": false, "wallpaperFolder": "" }"#,
 };
@@ -200,6 +201,10 @@ struct Inner {
     subs: Mutex<Subs>,
     display_turn: Arc<AtomicU64>,
     power_turn: Arc<AtomicU64>,
+    agents_turn: Arc<AtomicU64>,
+    /// An agent works now (told by the page), and when one last did (ms); the quiet minutes count from it.
+    agents_busy: AtomicBool,
+    agents_last: AtomicU64,
 }
 
 impl Inner {
@@ -272,7 +277,7 @@ impl Inner {
     }
 
     /// Whether the automatic conditions hold now; `None` when none is enabled.
-    fn conditions(cx: &Ctx) -> Option<bool> {
+    fn conditions(&self, cx: &Ctx) -> Option<bool> {
         let s = cx.settings(ID);
         let mut all = Vec::new();
         if flag(&s, "autoExternal") {
@@ -281,6 +286,10 @@ impl Inner {
         }
         if flag(&s, "autoPower") {
             all.push(svc_sysevents::power_status().ac);
+        }
+        if flag(&s, "autoAgents") {
+            let quiet = s["agentsMinutes"].as_u64().unwrap_or(5).min(120) * 60_000;
+            all.push(self.agents_busy.load(Relaxed) || now_ms() < self.agents_last.load(Relaxed) + quiet);
         }
         if all.is_empty() {
             None
@@ -292,7 +301,7 @@ impl Inner {
     }
 
     fn automate(self: &Arc<Self>, cx: &Ctx) {
-        let ok = Self::conditions(cx);
+        let ok = self.conditions(cx);
         let auto = self.session.lock().unwrap().as_ref().map(|s| s.auto);
         match (ok, auto) {
             (Some(true), None) => {
@@ -519,14 +528,22 @@ impl Inner {
         let all = display::list();
         let count = all.len();
         let Some(d) = all.into_iter().find(|d| at.x >= d.x && at.x < d.x + d.w && at.y >= d.y && at.y < d.y + d.h) else { return };
-        let known = self.levels.lock().unwrap().get(&d.id).copied();
-        let now = known.unwrap_or_else(|| {
-            let (m, hw) = display::probe(&d);
-            self.methods.lock().unwrap().insert(d.id.clone(), m);
-            hw.map_or(1.0, |hw| level_of(Self::extra(cx), d.internal, hw))
-        });
-        let next = (now + if up { STEP } else { -STEP }).clamp(0.0, 1.0);
-        self.apply(cx, &d, next);
+        let mut next = 0.0;
+        // With "linkKeys" every display moves by the same step, so the gaps between them stay (until one hits an end).
+        let linked = flag(&cx.settings(ID), "linkKeys");
+        for o in display::list().into_iter().filter(|o| o.id == d.id || linked) {
+            let known = self.levels.lock().unwrap().get(&o.id).copied();
+            let now = known.unwrap_or_else(|| {
+                let (m, hw) = display::probe(&o);
+                self.methods.lock().unwrap().insert(o.id.clone(), m);
+                hw.map_or(1.0, |hw| level_of(Self::extra(cx), o.internal, hw))
+            });
+            let to = (now + if up { STEP } else { -STEP }).clamp(0.0, 1.0);
+            self.apply(cx, &o, to);
+            if o.id == d.id {
+                next = to;
+            }
+        }
         cx.emit(ID, "brightness", json!({ "id": d.id, "name": d.name, "level": next, "shortcut": true, "count": count }));
     }
 
@@ -812,7 +829,7 @@ impl Feature for DisplaysKeepawake {
             }
             "stop" => {
                 // Stopped by hand while the conditions still hold: no new automatic session until they clear.
-                inner.suppressed.store(Inner::conditions(cx) == Some(true), Relaxed);
+                inner.suppressed.store(inner.conditions(cx) == Some(true), Relaxed);
                 inner.end(cx, "manual");
                 Ok(inner.session_json())
             }
@@ -823,6 +840,25 @@ impl Feature for DisplaysKeepawake {
                     let minutes = cx.settings(ID)["minutes"].as_u64().unwrap_or(60);
                     self.call(cx, "start", json!({ "minutes": minutes }))
                 }
+            }
+            // The page tells whether an agent works; the quiet minutes after the last one count from here.
+            "agents" => {
+                let busy = args["working"].as_bool().unwrap_or(false);
+                if busy {
+                    inner.agents_last.store(now_ms(), Relaxed);
+                } else if inner.agents_busy.load(Relaxed) {
+                    inner.agents_last.store(now_ms(), Relaxed);
+                    // The condition lapses once the quiet time has passed.
+                    let quiet = cx.settings(ID)["agentsMinutes"].as_u64().unwrap_or(5).min(120) * 60_000;
+                    let (me, cx2) = (inner.clone(), cx.clone());
+                    later(&inner.agents_turn, quiet + 500, move || me.automate(&cx2));
+                }
+                inner.agents_busy.store(busy, Relaxed);
+                if flag(&cx.settings(ID), "autoAgents") {
+                    let (me, cx2) = (inner.clone(), cx.clone());
+                    std::thread::spawn(move || me.automate(&cx2));
+                }
+                Ok(Value::Null)
             }
             "shortcut" => {
                 match args["id"].as_str() {

@@ -76,6 +76,32 @@ impl Feature for ChatPlus {
                 Ok(json!({}))
             }
             "drag" => drag(cx),
+            // A capture the user just took (Ctrl or Shift on the mascot) joins the chat: the chat only
+            // takes files from its inbox, so the picture is copied there.
+            "adopt" => {
+                let name = text("name");
+                if name.is_empty() || std::path::Path::new(&name).file_name() != Some(std::ffi::OsStr::new(&name)) {
+                    return Err("no such capture".into());
+                }
+                let from = cx.data_dir("capture").join("captures").join(&name);
+                let inbox = notch_core::files::inbox_dir();
+                std::fs::create_dir_all(&inbox).map_err(|e| e.to_string())?;
+                let to = inbox.join(&name);
+                std::fs::copy(&from, &to).map_err(|e| format!("The capture could not be attached: {e}"))?;
+                Ok(json!({ "name": name, "path": to.to_string_lossy() }))
+            }
+            // The text of a dropped file, for the code card in the chat: only a copy in the inbox, small, and text.
+            "read_text" => {
+                let path = std::path::PathBuf::from(text("path"));
+                let (Ok(inbox), Ok(file)) = (notch_core::files::inbox_dir().canonicalize(), path.canonicalize()) else {
+                    return Ok(Value::Null);
+                };
+                let small = std::fs::metadata(&file).map(|m| m.is_file() && m.len() <= 100_000).unwrap_or(false);
+                if file.parent() != Some(inbox.as_path()) || !small {
+                    return Ok(Value::Null);
+                }
+                Ok(std::fs::read_to_string(&file).map(Value::from).unwrap_or(Value::Null))
+            }
             "mail_open" => {
                 // The file is optional (voice prepares an email with or without one). A path that is
                 // given is still checked as before; the draft only fills the window's fields, it never sends.

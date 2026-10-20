@@ -157,7 +157,8 @@ pub fn start(app: AppHandle) {
     tasks.push(spawn(app.clone(), "integration_github", 7, 300, poll_github));
     tasks.extend(spawn_github_loops(app.clone()));
     tasks.push(spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom));
-    tasks.push(spawn(app, "integration_notion", 9, 300, poll_notion));
+    tasks.push(spawn(app.clone(), "integration_notion", 9, 300, poll_notion));
+    tasks.push(spawn(app, "integration_linear", 10, 120, poll_linear));
     log::line(format!("integrations: {} pollers started", tasks.len()));
 }
 
@@ -217,6 +218,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_n8n" => poll_n8n(app).await,
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
+        "integration_linear" => poll_linear(app).await,
         "integration_calcom" => poll_calcom(app).await,
         _ => {}
     }
@@ -573,6 +575,7 @@ async fn run_github_pulse(app: &AppHandle) -> bool {
     GITHUB.pulse_busy.store(false, Ordering::SeqCst);
     let Some(mut pulse) = root.and_then(|r| GitHubPulse::parse(&r, now_ms())) else { return false };
     pulse.retain_watched(&watch);
+    github::forge_into(&mut pulse).await;
     let pending = pulse.has_pending();
 
     let (events, notices) = {
@@ -963,6 +966,63 @@ fn parse_notion_page(obj: &Value) -> Option<Value> {
         "lastEditedAt": obj.get("last_edited_time").and_then(Value::as_str)?,
         "url": obj.get("url").and_then(Value::as_str).unwrap_or("https://notion.so"),
     }))
+}
+
+// ── Linear ────────────────────────────────────────────────────────────────────
+
+/// The unread inbox: the newest unread notifications about issues. A new one (never seen
+/// before in this run) badges the pill. The personal API key goes as it is in `Authorization`.
+async fn poll_linear(app: AppHandle) {
+    let Some(key) = secrets::get("linear-api-key") else { return };
+    let query = "{ notifications(first: 30) { nodes { id readAt createdAt type         ... on IssueNotification { issue { identifier title url } actor { name } } } } }";
+    let response = client()
+        .post("https://api.linear.app/graphql")
+        .header("Authorization", key)
+        .json(&json!({ "query": query }))
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        emit(&app, IntegrationUpdate {
+            id: "integration_linear",
+            data: json!({}),
+            error: Some(status_error(response.status().as_u16(), &crate::i18n::t("Key lacks access"))),
+            event: None,
+        });
+        return;
+    }
+    let body: Value = response.json().await.unwrap_or(json!({}));
+    let nodes = body.pointer("/data/notifications/nodes").and_then(Value::as_array).cloned().unwrap_or_default();
+    let unread: Vec<Value> = nodes
+        .iter()
+        .filter(|n| n.get("readAt").is_none_or(Value::is_null))
+        .filter_map(|n| {
+            let issue = n.get("issue").filter(|i| !i.is_null())?;
+            Some(json!({
+                "id": n.get("id")?.as_str()?,
+                "identifier": issue.get("identifier").and_then(Value::as_str).unwrap_or(""),
+                "title": issue.get("title").and_then(Value::as_str).unwrap_or(""),
+                "url": issue.get("url").and_then(Value::as_str)?,
+                "actor": n.pointer("/actor/name").and_then(Value::as_str),
+                "kind": n.get("type").and_then(Value::as_str).unwrap_or(""),
+                "createdAt": n.get("createdAt").and_then(Value::as_str),
+            }))
+        })
+        .collect();
+    let event = unread.first().and_then(|first| {
+        let id = first.get("id")?.as_str()?;
+        if !is_new("linear", id) {
+            return None;
+        }
+        let label = format!("{} {}", first["identifier"].as_str()?, first["title"].as_str()?);
+        Some(IntegrationEvent { success: true, label, detail: None })
+    });
+    emit(&app, IntegrationUpdate {
+        id: "integration_linear",
+        data: json!({ "unread": unread }),
+        error: None,
+        event,
+    });
 }
 
 // ── Cal.com ───────────────────────────────────────────────────────────────────

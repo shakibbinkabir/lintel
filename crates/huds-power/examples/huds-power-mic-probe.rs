@@ -64,7 +64,7 @@ fn main() {
 
     read("before");
     // The watcher as the app runs it: one line whenever the list changes (and once at the start).
-    let watch = mic::watch(move |apps| println!("{:5.2}s detector: {apps:?}", start.elapsed().as_secs_f32()));
+    let watch = mic::watch(move |apps, cam| println!("{:5.2}s detector: {apps:?} camera {cam:?}", start.elapsed().as_secs_f32()));
     std::thread::sleep(Duration::from_millis(500));
 
     println!("{} child starts ({mode}): {}", at(), child.display());

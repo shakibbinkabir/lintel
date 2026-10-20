@@ -4,12 +4,12 @@
 // "Always" on approval cards lives in src/views/views.ts and calls "always" here.
 
 import "./style.css";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { defineFeature } from "../../core/feature";
 import { Bridge } from "../../core/bridge";
 import { btn, field } from "../../ui/components";
 import { h } from "../../views/dom";
-import { attachWindow } from "../../views/chat";
+import { attachFile, attachWindow } from "../../views/chat";
 import { t, tl } from "../../i18n/i18n";
 
 /** Dragging the mascot further than this starts the attach drag. */
@@ -21,6 +21,24 @@ export default defineFeature({
   start(cx) {
     let armed: { x: number; y: number } | null = null;
     let release: (() => void) | null = null;
+    /** Ctrl+drag the mascot: the screen; Shift+drag: an area. Taken when the button is let go. */
+    let shot: "full" | "area" | null = null;
+
+    // The capture feature keeps the picture; this copies it into the chat's inbox and attaches it.
+    const takeShot = async (kind: "full" | "area") => {
+      const done = new Promise<string>((resolve) => {
+        const stop = window.setTimeout(() => resolve(""), 120_000);
+        void listen<{ shot: { name: string } }>("capture:captured", (e) => {
+          window.clearTimeout(stop);
+          resolve(e.payload.shot.name);
+        }).then((un) => void done.finally(un));
+      });
+      await Bridge.featureCall("capture", "begin", kind === "full" ? { id: "full" } : { tool: "shot" });
+      const name = await done;
+      if (!name) return;
+      const file = await cx.call<{ name: string; path: string }>("adopt", { name });
+      if (file && attachFile(file)) void emit("shortcut", "openChat");
+    };
 
     const overMascot = (e: MouseEvent) => {
       const canvas = document.getElementById("bot-canvas");
@@ -36,11 +54,20 @@ export default defineFeature({
       if (!armed || !(e.buttons & 1)) return;
       if (Math.hypot(e.screenX - armed.x, e.screenY - armed.y) < DRAG_PX) return;
       armed = null;
+      if (e.ctrlKey || e.shiftKey) {
+        shot = e.shiftKey ? "area" : "full";
+        return;
+      }
       // Rust follows the pointer from here (the island goes click-through once it is left).
       release ??= cx.island.hold();
       void cx.call("drag");
     };
-    const up = () => (armed = null);
+    const up = () => {
+      armed = null;
+      const kind = shot;
+      shot = null;
+      if (kind) void takeShot(kind);
+    };
     document.addEventListener("mousedown", down, true);
     document.addEventListener("mousemove", move, true);
     document.addEventListener("mouseup", up, true);

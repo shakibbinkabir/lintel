@@ -489,8 +489,10 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
 
       h("div", { class: "section-title", text: t("Scrolling") }),
       card([
-        row(t("Reverse the wheel"), sw("invertVertical"), t("The mouse wheel only: a touchpad keeps its own direction.")),
+        row(t("Reverse the wheel"), sw("invertVertical"), t("The mouse wheel only; the touchpad has its own switch below.")),
         row(t("Reverse sideways scrolling"), sw("invertHorizontal")),
+        row(t("Reverse the touchpad"), sw("padVertical"), t("Up and down on the touchpad, apart from the mouse wheel.")),
+        row(t("Reverse the touchpad sideways"), sw("padHorizontal")),
         row(t("Scroll sideways while a key is held"), sw("sideways"), t("For apps that do not do it themselves.")),
         row(t("Key to hold"), pick("sidewaysKey", ["Shift", "Alt", "Ctrl"])),
         block(t("Apps to leave alone"), t("The wheel is not changed while the pointer is over one of them."), appList("scrollExceptions")),

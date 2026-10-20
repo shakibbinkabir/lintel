@@ -76,6 +76,9 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
   // Claude Code in Cursor's terminal: the same hooks as Claude Code.
   { id: "agent_cursor", name: "Cursor", color: "#C0C4CC", category: "workspace",
     subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
+  // Claude Code in a JetBrains IDE's terminal (the relay tags it from TERMINAL_EMULATOR): the same hooks as Claude Code.
+  { id: "agent_jetbrains", name: "JetBrains", color: "#FF318C", category: "workspace",
+    subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
   { id: "agent_antigravity", name: "Antigravity", color: "#E879F9", category: "workspace",
     subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
   { id: "agent_codex", name: "Codex", color: "#2DD4BF", category: "workspace",
@@ -93,6 +96,8 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
   { id: "agent_amp", name: "Amp", color: "#F59E0B", category: "agent",
     subtitle: N_("Agent"), source: "agent", support: "yes", connect: hooks },
   { id: "agent_hermes", name: "Hermes", color: "#C084FC", category: "agent",
+    subtitle: N_("Agent"), source: "agent", support: "yes", connect: hooks },
+  { id: "agent_kiro", name: "Kiro", color: "#9046FF", category: "agent",
     subtitle: N_("Agent"), source: "agent", support: "yes", connect: hooks },
   // Claude Code sessions run from the Claude desktop app: the relay tags them
   // from CLAUDE_CODE_ENTRYPOINT, so there is nothing to install.
@@ -126,6 +131,8 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
     subtitle: N_("Integration"), source: "n8n", support: "yes", connect: key("calcom-api-key") },
   { id: "integration_stripe", name: "Stripe", color: "#0570DE", category: "service",
     subtitle: N_("Integration"), source: "n8n", support: "yes", connect: key("stripe-api-key") },
+  { id: "integration_linear", name: "Linear", color: "#5E6AD2", category: "service",
+    subtitle: N_("Integration"), source: "n8n", support: "yes", connect: key("linear-api-key") },
   { id: "integration_music", name: "Apple Music", color: "#FA2D48", category: "service",
     subtitle: N_("Integration"), source: "n8n", support: "no", connect: none },
 ];
@@ -134,7 +141,7 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
 export const DEFAULT_MAIN_PILL = "integration_claude";
 
 /** How many declared pills may sit next to the main one. */
-export const MAX_DECLARED = 4;
+export const MAX_DECLARED = PILL_CATALOG.length; // no practical limit
 
 /** The OS this page runs on. */
 export const HOST_OS: HostOs = "windows";

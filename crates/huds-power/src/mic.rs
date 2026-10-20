@@ -17,6 +17,8 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects, WaitForSingleObject, INFINITE};
 
 const STORE: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone");
+// The camera keeps the same record under `webcam`.
+const CAMERA: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam");
 
 fn open(parent: HKEY, path: PCWSTR, access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Option<HKEY> {
     let mut key = HKEY::default();
@@ -69,17 +71,22 @@ fn nice(name: &str, packaged: bool) -> String {
 /// The apps with the microphone open now, other than Lintel itself (its dictation is announced
 /// by its own HUD, not as a stranger). Sorted, without repeats.
 pub fn in_use() -> Vec<String> {
-    holders(std::env::current_exe().ok().map(|p| p.to_string_lossy().replace('\\', "#").to_lowercase()))
+    holders(STORE, std::env::current_exe().ok().map(|p| p.to_string_lossy().replace('\\', "#").to_lowercase()))
+}
+
+/// The apps with the camera open now.
+pub fn camera_in_use() -> Vec<String> {
+    holders(CAMERA, None)
 }
 
 /// The same with this program in it: the probe checks that the difference is this program alone.
 pub fn everyone() -> Vec<String> {
-    holders(None)
+    holders(STORE, None)
 }
 
 /// `me`: one desktop program left out, by its registry name in lower case.
-fn holders(me: Option<String>) -> Vec<String> {
-    let Some(store) = open(HKEY_CURRENT_USER, STORE, KEY_READ) else { return Vec::new() };
+fn holders(path: PCWSTR, me: Option<String>) -> Vec<String> {
+    let Some(store) = open(HKEY_CURRENT_USER, path, KEY_READ) else { return Vec::new() };
     let mut out = Vec::new();
     for name in subkeys(store) {
         if name == "NonPackaged" {
@@ -117,8 +124,8 @@ impl Drop for Watch {
     }
 }
 
-/// Calls `on` with the list of apps whenever it changes (and once at the start).
-pub fn watch(on: impl Fn(Vec<String>) + Send + 'static) -> Option<Watch> {
+/// Calls `on` with the apps holding the microphone and the camera whenever either list changes (and once at the start).
+pub fn watch(on: impl Fn(Vec<String>, Vec<String>) + Send + 'static) -> Option<Watch> {
     let stop = unsafe { CreateEventW(None, true, false, None) }.ok()?;
     let stop_raw = Arc::new(AtomicIsize::new(stop.0 as isize));
     let raw = stop.0 as isize;
@@ -126,15 +133,19 @@ pub fn watch(on: impl Fn(Vec<String>) + Send + 'static) -> Option<Watch> {
         let stop = HANDLE(raw as *mut _);
         let Some(store) = open(HKEY_CURRENT_USER, STORE, KEY_READ | KEY_NOTIFY) else { return };
         let Ok(woken) = (unsafe { CreateEventW(None, false, false, None) }) else { return };
-        let mut last: Option<Vec<String>> = None;
+        // A PC whose camera was never used has no such key: only the microphone then wakes it.
+        let cam = open(HKEY_CURRENT_USER, CAMERA, KEY_READ | KEY_NOTIFY);
+        let mut last: Option<(Vec<String>, Vec<String>)> = None;
         loop {
             // Armed before reading, so a change in between is not lost.
-            let armed = unsafe {
-                RegNotifyChangeKeyValue(store, true, REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME, Some(woken), true)
-            };
-            let now = in_use();
+            let flags = REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME;
+            let armed = unsafe { RegNotifyChangeKeyValue(store, true, flags, Some(woken), true) };
+            if let Some(cam) = cam {
+                unsafe { _ = RegNotifyChangeKeyValue(cam, true, flags, Some(woken), true) };
+            }
+            let now = (in_use(), camera_in_use());
             if last.as_ref() != Some(&now) {
-                on(now.clone());
+                on(now.0.clone(), now.1.clone());
                 last = Some(now);
             }
             if armed.is_err() {
@@ -150,6 +161,9 @@ pub fn watch(on: impl Fn(Vec<String>) + Send + 'static) -> Option<Watch> {
         }
         unsafe {
             _ = RegCloseKey(store);
+            if let Some(cam) = cam {
+                _ = RegCloseKey(cam);
+            }
             _ = CloseHandle(woken);
         }
     });

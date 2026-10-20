@@ -14,6 +14,20 @@ import { card, iconBtn, menu, row, setMeter, slider, stripRow, toggle, type Menu
 import { icon } from "../../ui/icons";
 import { h } from "../../views/dom";
 
+/** The mouse wheel over a fader: 5 % a notch, up is louder. */
+const wheel = (fader: HTMLElement, set: (fraction: number) => void) =>
+  fader.addEventListener(
+    "wheel",
+    (e) => {
+      if (fader.getAttribute("aria-disabled") === "true") return;
+      e.preventDefault();
+      const v = Math.max(0, Math.min(1, Number(fader.style.getPropertyValue("--v") || 0) + (e.deltaY < 0 ? 0.05 : -0.05)));
+      setMeter(fader, v);
+      set(v);
+    },
+    { passive: false },
+  );
+
 // ── What Rust sends ───────────────────────────────────────────────────────────
 
 interface App {
@@ -207,6 +221,7 @@ function buildSection(cx: FeatureCtx): SectionHost {
       send(level);
     };
     const fader = slider(0, { label, onInput: set, onChange: set, onDrag: hold });
+    wheel(fader, set);
     // The device's name gets the whole width: Windows names them at length.
     const el = card([pick.el, h("div", { class: "f-audio-mixer-fader" }, button, fader, pct)]);
     el.classList.add("f-audio-mixer-dev");
@@ -325,6 +340,7 @@ function buildSection(cx: FeatureCtx): SectionHost {
       send(r.app.volume);
     };
     const fader = slider(0, { label: nameOf(app), onInput: set, onChange: set, onDrag: hold });
+    wheel(fader, set);
     const mute = iconBtn("volume", t("Mute"), () => {
       r.app.mute = !r.app.mute;
       void cx.call("appMute", { id, mute: r.app.mute });
@@ -605,8 +621,8 @@ function settingsPage(cx: FeatureCtx): HTMLElement {
     }
 
     const pct = h("span", { class: "f-audio-mixer-pct", text: t("{percent}%", { percent: now.guardPercent }) });
-    // 10 % at least (never into silence), in steps of 5.
-    const snap = (fraction: number) => Math.max(10, Math.round(fraction * 20) * 5);
+    // In steps of 5, down to silence.
+    const snap = (fraction: number) => Math.round(fraction * 20) * 5;
     const range = slider(now.guardPercent / 100, {
       label: t("Volume to lower to"),
       onInput: (fraction) => (pct.textContent = t("{percent}%", { percent: snap(fraction) })),

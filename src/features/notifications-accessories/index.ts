@@ -41,7 +41,7 @@ interface Toast {
 }
 
 /** Where the mirror stands: what is missing is a state, never an error. */
-type MirrorState = "off" | "identity" | "restart" | "consent" | "denied" | "unavailable" | "on";
+type MirrorState = "off" | "identity" | "restart" | "consent" | "denied" | "unavailable" | "popups" | "on";
 
 interface Mirror {
   state: MirrorState;
@@ -88,9 +88,7 @@ function batteryText(cx: FeatureCtx, b: Battery): string {
 function reason(cx: FeatureCtx, state: MirrorState): string {
   switch (state) {
     case "off":
-      return MIRROR_WAITS
-        ? cx.t("Windows lets an app read the notifications of other apps only when it is signed and packaged. This build of Lintel is not, so mirroring cannot be turned on yet. Nothing is read.")
-        : cx.t("Notification mirroring is off. Turn it on in Settings, under Notifications and accessories.");
+      return cx.t("Notification mirroring is off. Turn it on in Settings, under Notifications and accessories.");
     case "identity":
       return cx.t("Windows lets an app read notifications only when it has a package identity. Set up registers one for your account: nothing else is installed and no administrator is needed.");
     case "restart":
@@ -101,6 +99,8 @@ function reason(cx: FeatureCtx, state: MirrorState): string {
       return cx.t("Windows has this turned off. Allow Lintel under Privacy & security, Notifications in Windows Settings.");
     case "unavailable":
       return cx.t("Windows did not let Lintel listen for notifications on this PC.");
+    case "popups":
+      return cx.t("Lintel reads the pop-up of each notification as Windows shows it, so a notification that Windows hides (Focus, Do Not Disturb) is not seen. A click brings the app forward; the buttons of the original pop-up cannot be pressed from here.");
     case "on":
       return cx.t("New notifications appear on the island and in the Notifications section.");
   }
@@ -112,7 +112,7 @@ const hasSection = () => opts.notifications || headphonesSeen;
 
 function onAccessory(cx: FeatureCtx, a: Accessory) {
   headphones = headphones.filter((d) => d.name !== a.name);
-  if (a.connected && a.audio) {
+  if (a.connected) {
     headphones.push(a);
     headphonesSeen = true;
   }
@@ -140,7 +140,7 @@ function onToast(cx: FeatureCtx, n: Toast) {
     detail: n.body || (n.title ? n.app : undefined),
     icon: "bell",
     section: "notifications",
-    action: n.aumid ? { label: cx.t("Open"), run: () => void cx.call("open", { aumid: n.aumid }) } : undefined,
+    action: n.aumid || n.app ? { label: cx.t("Open"), run: () => void cx.call("open", { aumid: n.aumid, app: n.app }) } : undefined,
   });
 }
 
@@ -163,7 +163,7 @@ function buildSection(cx: FeatureCtx): SectionHost {
     head.replaceChildren(
       ...headphones.map((d) => {
         const chip = capsule({
-          icon: HEADPHONES,
+          icon: KIND_ICON[d.kind] ?? "bluetooth",
           text: d.battery ? cx.t("{name} · {battery}", { name: d.name, battery: batteryText(cx, d.battery) }) : d.name,
           tone: d.tone ?? undefined,
         });
@@ -178,7 +178,7 @@ function buildSection(cx: FeatureCtx): SectionHost {
       // Why it is empty, in a sentence; what to do about it is in Settings.
       const text =
         !opts.notifications || mirror === "off" ? reason(cx, "off")
-        : mirror === "on" ? cx.t("No notifications yet.")
+        : mirror === "on" || mirror === "popups" ? cx.t("No notifications yet.")
         : cx.t("Notification mirroring is not ready yet. Settings, under Notifications and accessories, says what is missing.");
       list.replaceChildren(h("p", { class: "f-notifications-accessories-empty", text }));
       return;
@@ -188,7 +188,7 @@ function buildSection(cx: FeatureCtx): SectionHost {
         h(
           "button",
           // A click brings the app that sent it forward; one without an app only sits there.
-          { class: "f-notifications-accessories-item", onclick: () => n.aumid && void cx.call("open", { aumid: n.aumid }) },
+          { class: "f-notifications-accessories-item", onclick: () => (n.aumid || n.app) && void cx.call("open", { aumid: n.aumid, app: n.app }) },
           h("b", { text: n.title || n.app }),
           h("small", { text: n.title && n.app ? cx.t("{app} · {time}", { app: n.app, time: clock(n.at) }) : clock(n.at) }),
           n.body ? h("span", { text: n.body }) : null,
@@ -200,7 +200,7 @@ function buildSection(cx: FeatureCtx): SectionHost {
   const load = () =>
     void cx.call<Accessory[]>("devices").then((all) => {
       if (!all) return;
-      headphones = all.filter((d) => d.audio);
+      headphones = all;
       if (on) draw();
     });
 
@@ -232,12 +232,9 @@ const STATUS: Record<MirrorState, string> = {
   consent: "Permission needed",
   denied: "Turned off in Windows",
   unavailable: "Not available",
+  popups: "On, reading pop-ups",
   on: "On",
 };
-
-// debt: mirroring waits for the signed build (Windows gives the notifications only to a signed, packaged
-// app, and the app's manifest is not changed before that): the switch is shown and cannot be turned on.
-const MIRROR_WAITS = true;
 
 function settingsPage(cx: FeatureCtx): HTMLElement {
   const el = h("div", { class: "f-notifications-accessories-settings" });
@@ -273,8 +270,7 @@ function settingsPage(cx: FeatureCtx): HTMLElement {
 
   void cx.settings.get().then((stored) => {
     const now = { ...DEFAULTS, ...stored } as Options;
-    const mirrorSwitch = toggle(now.notifications && !MIRROR_WAITS, (on) => void cx.settings.patch({ notifications: on }));
-    mirrorSwitch.disabled = MIRROR_WAITS;
+    const mirrorSwitch = toggle(now.notifications, (on) => void cx.settings.patch({ notifications: on }));
     el.append(
       h("div", { class: "section-title", text: cx.t("Accessories") }),
       card([
@@ -287,26 +283,17 @@ function settingsPage(cx: FeatureCtx): HTMLElement {
       h("div", { class: "section-title", text: cx.t("Notifications") }),
       card([
         row(
-          cx.t("Mirror notifications"),
+          cx.t("Show notifications from other apps (read as they pop up)"),
           mirrorSwitch,
           cx.t(
-            "Shows the notifications of your other apps on the island and keeps the last {count} in memory until you clear them or quit Lintel. For that Lintel reads the app, title and text of each one; Windows asks you before it allows it.",
+            "Shows the notifications of your other apps on the island and keeps the last {count} in memory until you clear them or quit Lintel. Lintel reads the app, title and text of each pop-up as Windows shows it; nothing leaves this PC and nothing is saved to disk. Off by default.",
             { count: MAX },
           ),
         ),
       ]),
       status,
     );
-    if (!MIRROR_WAITS) return void cx.call<Mirror>("mirror").then(drawStatus);
-    status.replaceChildren(
-      card([
-        row(
-          cx.t("Waiting for a signed build"),
-          h("span"),
-          cx.t("Windows lets an app read the notifications of other apps only when it is signed and packaged. This build of Lintel is not, so mirroring cannot be turned on yet. Nothing is read."),
-        ),
-      ]),
-    );
+    void cx.call<Mirror>("mirror").then(drawStatus);
   });
   return el;
 }
@@ -346,7 +333,7 @@ export default defineFeature({
       redraw?.();
     });
     void cx.call<Accessory[]>("devices").then((all) => {
-      headphones = (all ?? []).filter((d) => d.audio);
+      headphones = all ?? [];
       headphonesSeen ||= headphones.length > 0;
       redraw?.();
     });

@@ -25,6 +25,13 @@ async function main() {
 
   void Sound.preload();
 
+  // Before the island exists (its canvases size their bitmaps once): make one
+  // CSS pixel one window pixel when the web view's ratio differs from the window's.
+  const dpr = window.devicePixelRatio || 1;
+  if (await Bridge.fitZoom(dpr)) {
+    for (let i = 0; i < 20 && window.devicePixelRatio === dpr; i++) await new Promise((r) => setTimeout(r, 25));
+  }
+
   const island = new Island(root);
   installTooltip();
 
@@ -83,7 +90,10 @@ async function main() {
   });
 
   // A dragged island follows its display, or goes back to the top centre when that display is gone.
-  await onEvent<null>("screen-changed", () => void island.place());
+  await onEvent<null>("screen-changed", async () => {
+    await Bridge.fitZoom(window.devicePixelRatio || 1);
+    void island.place();
+  });
 
   // Settings → Reload sounds: read the sounds folder again, and let them hear it.
   await onEvent<null>("sounds-changed", () => {

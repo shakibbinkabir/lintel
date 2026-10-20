@@ -46,7 +46,7 @@ static MANIFEST: Manifest = Manifest {
     ],
     tray: &[],
     // pinned, order, hidden (id -> name), hideInactive: the page's own; switcher: the outputs the shortcut cycles
-    // through, in order (none = all); guardPercent: 10–100; preferredMic: a device id, "" = whatever Windows picks
+    // through, in order (none = all); guardPercent: 0–100; preferredMic: a device id, "" = whatever Windows picks
     defaults: r#"{ "pinned": [], "order": [], "hidden": {}, "hideInactive": false,
         "switcher": [], "switchNotice": true, "callsFollow": false,
         "guard": false, "guardPercent": 25, "preferredMic": "", "auto": false, "priority": [] }"#,
@@ -120,8 +120,7 @@ impl Cfg {
             switcher: ids("switcher").unwrap_or_default(),
             calls_follow: v["callsFollow"].as_bool().unwrap_or(false),
             guard: v["guard"].as_bool().unwrap_or(false),
-            // Never into silence: the floor is 10 %.
-            guard_level: (v["guardPercent"].as_f64().unwrap_or(25.0) as f32 / 100.0).clamp(0.10, 1.0),
+            guard_level: (v["guardPercent"].as_f64().unwrap_or(25.0) as f32 / 100.0).clamp(0.0, 1.0),
             preferred_mic: v["preferredMic"].as_str().unwrap_or_default().to_owned(),
             auto: v["auto"].as_bool().unwrap_or(false),
             priority: ids("priority").unwrap_or_default(),

@@ -48,3 +48,4 @@
 .f-controls-toggles-md blockquote { padding-left: var(--s-3); border-left: 2px solid var(--hairline); color: var(--dim); }
 .f-controls-toggles-note { display: flex; align-items: center; gap: var(--s-2); color: var(--dim); font: 400 var(--t-xs) var(--font); }
 .f-controls-toggles-note:empty { display: none; }
+.f-controls-toggles-md li.task { list-style: none; margin-left: calc(-1 * var(--s-3)); }

@@ -83,7 +83,7 @@ static MANIFEST: Manifest = Manifest {
 
 /// One slice. `kind`: app (target = AppUserModelID), file (a path, a folder or a
 /// shell: location), link, media (target = playPause | next | prev), nowplaying,
-/// shortcut (target = "Ctrl+Shift+S"), submenu (items).
+/// shortcut (target = "Ctrl+Shift+S"), command (target = a command line or script path, run hidden), submenu (items).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Item {
@@ -111,7 +111,7 @@ pub fn clean(items: Vec<Item>, depth: u8) -> Vec<Item> {
             it.icon = it.icon.trim().chars().take(40).collect();
             it.target = it.target.trim().to_string();
             let keep = match it.kind.as_str() {
-                "app" | "file" | "link" | "shortcut" => !it.target.is_empty(),
+                "app" | "file" | "link" | "shortcut" | "command" => !it.target.is_empty(),
                 "media" => matches!(it.target.as_str(), "playPause" | "next" | "prev"),
                 "nowplaying" => true,
                 "submenu" if depth == 0 => {
@@ -508,6 +508,17 @@ fn run(item: &Item) -> Result<(), String> {
             Ok(())
         }
         "shortcut" => svc_inject::send_keys(&item.target),
+        // Only ever from the person's click on this slice; the command line is theirs, as typed in the editor.
+        "command" => {
+            use std::os::windows::process::CommandExt;
+            std::process::Command::new("cmd")
+                .arg("/C")
+                .raw_arg(format!("\"{}\"", item.target))
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .map(|_| ())
+                .map_err(|e| format!("{} did not start: {e}", item.target))
+        }
         _ => Err("This slice cannot be run.".into()),
     }
 }

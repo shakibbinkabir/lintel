@@ -12,7 +12,7 @@
 // (docs/ARCHITECTURE.md §4.1). One window: the preview that Space opens.
 
 import "./style.css";
-import { dropMessage } from "../../core/bridge";
+import { dropMessage, onEvent } from "../../core/bridge";
 import { defineFeature, type FeatureCtx, type SectionHost } from "../../core/feature";
 import { tn } from "../../i18n/i18n";
 import { card, field, menu, row, toggle, type MenuItem } from "../../ui/components";
@@ -344,10 +344,20 @@ function buildShelf(cx: FeatureCtx): SectionHost {
   const dragOut = async (what: Item[]) => {
     dragging = true;
     const release = cx.island.hold();
+    // Out of the island for a moment: fold it, so it does not cover the drop target. A pinned island stays (close() refuses).
+    let away: ReturnType<typeof setTimeout> | undefined;
+    const unlisten = onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => {
+      const r = document.getElementById("island")?.getBoundingClientRect();
+      const out = !!r && (x < r.left || x > r.right || y < r.top || y > r.bottom);
+      if (!out) clearTimeout(away), (away = undefined);
+      else away ??= setTimeout(() => cx.island.close(), 350);
+    });
     try {
       // Returns when the button is released, wherever that is.
       await cx.call("drag", { ids: ids(what) });
     } finally {
+      clearTimeout(away);
+      void unlisten.then((u) => u());
       dragging = false;
       release();
     }

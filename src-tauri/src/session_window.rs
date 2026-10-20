@@ -61,9 +61,39 @@ fn ancestors_below(procs: &HashMap<u32, Proc>, start: u32, tops: &[&str]) -> Vec
     out
 }
 
+/// The processes the relay listed itself (`lintel_ancestors`, nearest first),
+/// cut before the top of the tree as `ancestors` is. One the snapshot no longer
+/// has (the shell that ran the relay, already gone) is kept: only a known tree
+/// top ends the list. (After upstream pull request 607.)
+pub fn below_tops(procs: &HashMap<u32, Proc>, listed: &[u32]) -> Vec<u32> {
+    let mut out = Vec::new();
+    for &pid in listed.iter().take(MAX_DEPTH) {
+        let top = procs.get(&pid).is_some_and(|p| WINDOWS_TREE_TOPS.contains(&p.exe.to_ascii_lowercase().as_str()));
+        if top || pid == 0 || out.contains(&pid) {
+            break;
+        }
+        out.push(pid);
+    }
+    out
+}
+
 /// The nearest ancestor that owns a window: the terminal or the editor. The
 /// Windows side walks `ancestors` itself (platform/windows.rs); this states the
 /// rule the tests pin down.
+/// Up to `count` lines of `path` from line `from` (1-based) for the session's
+/// code view, only when the file lies inside the session's own folder and is a
+/// plain file under 1 MB. Anything else is `None`: the view then shows the diff alone.
+pub fn file_lines(cwd: &str, path: &str, from: usize, count: usize) -> Option<Vec<String>> {
+    let root = std::fs::canonicalize(cwd).ok()?;
+    let file = std::fs::canonicalize(path).ok()?;
+    let meta = std::fs::metadata(&file).ok()?;
+    if !file.starts_with(&root) || !meta.is_file() || meta.len() > 1_000_000 {
+        return None;
+    }
+    let text = String::from_utf8(std::fs::read(&file).ok()?).ok()?;
+    Some(text.lines().skip(from.saturating_sub(1)).take(count.min(60)).map(|l| l.chars().take(240).collect()).collect())
+}
+
 #[cfg(test)]
 pub fn window_owner(procs: &HashMap<u32, Proc>, start: u32, has_window: impl Fn(u32) -> bool) -> Option<u32> {
     ancestors_below(procs, start, WINDOWS_TREE_TOPS).into_iter().find(|pid| has_window(*pid))
@@ -153,6 +183,15 @@ mod tests {
         ]);
         assert_eq!(ancestors_below(&procs, 600, WINDOWS_TREE_TOPS), [500, 400, 300, 200]);
         assert_eq!(window_owner(&procs, 600, |pid| pid == 200 || pid == 100), Some(200));
+    }
+
+    #[test]
+    fn a_list_from_the_relay_is_cut_at_the_tree_top_and_keeps_the_gone() {
+        // bash (500) already gone, claude, a shell started from the Start menu, explorer.
+        let procs = tree(&[(4, 0, "System"), (100, 4, "explorer.exe"), (300, 100, "powershell.exe"), (400, 300, "claude.exe")]);
+        assert_eq!(below_tops(&procs, &[500, 400, 300, 100, 4]), [500, 400, 300]);
+        assert!(below_tops(&procs, &[]).is_empty());
+        assert_eq!(below_tops(&procs, &[500, 0, 400]), [500]);
     }
 
     #[test]

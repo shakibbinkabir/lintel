@@ -1,5 +1,8 @@
 {
   "strings": {
+    "Copy text": { "en": "Copy text" },
+    "Reading…": { "en": "Reading…" },
+    "No text found": { "en": "No text found" },
     "Capture": {
       "en": "Capture",
       "zh-Hans": "截图",
@@ -624,8 +627,8 @@
       "ru": "Последние 12 снимков хранятся на этом компьютере, на странице «Снимки» острова, пока вы их не очистите. Текст и QR-коды распознаются на этом компьютере.",
       "id": "12 tangkapan terakhir tersimpan di komputer ini, di halaman Tangkapan pada island, sampai Anda menghapusnya. Teks dan kode QR dibaca di komputer ini."
     },
-    "Drag to move. Double-click to close. Scroll to fade. Right-click to let clicks through.": {
-      "en": "Drag to move. Double-click to close. Scroll to fade. Right-click to let clicks through.",
+    "Drag to move. Double-click to close. Scroll to zoom, Alt+scroll to fade, Ctrl+drag to take the file. Right-click to let clicks through.": {
+      "en": "Drag to move. Double-click to close. Scroll to zoom, Alt+scroll to fade, Ctrl+drag to take the file. Right-click to let clicks through.",
       "zh-Hans": "拖动移动。双击关闭。滚动调整透明度。右键可让点击穿透。",
       "hi": "खींचकर खिसकाएँ। बंद करने के लिए डबल-क्लिक करें। फीका करने के लिए स्क्रॉल करें। क्लिक आर-पार जाने देने के लिए राइट-क्लिक करें।",
       "es": "Arrastra para mover. Doble clic para cerrar. Desplázate para atenuar. Clic derecho para dejar pasar los clics.",

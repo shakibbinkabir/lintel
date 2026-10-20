@@ -129,8 +129,8 @@ export interface IslandApi {
   activityChanged(activity: string): void;
   /** Draws an activity's strip row again where it stands; the island does not slide out. */
   redraw(activity: string): void;
-  /** A full-screen app came to the front (or left): the island stays away and notices wait (§4). */
-  fullscreen(on: boolean): void;
+  /** A full-screen app came to the front (or left): the island stays away and notices wait (§4). `call`: the reason is the microphone or camera in use, so sounds stop too. */
+  fullscreen(on: boolean, call?: boolean): void;
   /** Keeps the island from folding until the returned function is called. */
   hold(): () => void;
   /** What the island shows right now. */

@@ -46,6 +46,7 @@ pub struct Event {
     pub uid: String,
     pub title: String,
     pub location: String,
+    pub description: String,
     pub link: Option<String>,
     start: Wall,
     end: Option<Wall>,
@@ -60,6 +61,7 @@ pub struct Event {
 pub struct Occ {
     pub title: String,
     pub location: String,
+    pub description: String,
     pub link: Option<String>,
     pub start: i64,
     pub end: i64,
@@ -209,6 +211,8 @@ fn build(props: &[Prop]) -> Option<Event> {
     let (location, description, url) = (text("LOCATION"), text("DESCRIPTION"), text("URL"));
     Some(Event {
         link: meeting_link(&[&location, &description, &url]),
+        // debt: cut at 1500 characters; a feed's description can be a page long.
+        description: description.trim().chars().take(1500).collect(),
         uid: get("UID").map(|p| p.2.clone()).unwrap_or_default(),
         title: get("SUMMARY").map(|p| unescape(&p.2)).filter(|s| !s.is_empty()).unwrap_or_else(|| "(no title)".into()),
         location,
@@ -345,6 +349,7 @@ impl Event {
         let occ = |(s, e): (i64, i64), unsupported: Option<String>| Occ {
             title: self.title.clone(),
             location: self.location.clone(),
+            description: self.description.clone(),
             link: self.link.clone(),
             start: s,
             end: e,

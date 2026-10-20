@@ -5,14 +5,14 @@
 // Two halves, each with its own switch in the settings:
 // - accessories (`bt`): a Bluetooth device watcher. While it is on it is the
 //   only thing that runs, and it only waits for Windows to call.
-// - notifications (`mirror`): the toasts of other apps. Off by default, and
-//   even when wanted nothing listens until the user has registered the identity
-//   package and answered Windows' question, both from a click in Settings. What
-//   is missing is a state the page shows, never an error.
+// - notifications (`mirror`): the toasts of other apps. Off by default. The
+//   Windows listener needs a signed, packaged app (identity package, Windows'
+//   question); where it is not allowed, `toast` reads the pop-ups as they show.
+//   What is missing is a state the page shows, never an error.
 //
 // Events: `accessory` { name, kind, audio, connected, battery: { percent, left, right } | null, tone },
 // `notification` { id, app, aumid, title, body }, `mirror` { state, registered, error? } with
-// state off | identity | restart | consent | denied | unavailable | on.
+// state off | identity | restart | consent | denied | unavailable | popups | on.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 
 pub mod bt;
 pub mod mirror;
+pub mod toast;
 
 const ID: &str = "notifications-accessories";
 
@@ -35,7 +36,14 @@ static MANIFEST: Manifest = Manifest {
     defaults: r#"{ "accessories": true, "notifications": false }"#,
 };
 
-type Slot = Arc<Mutex<Option<mirror::Listener>>>;
+/// What is reading notifications now: the Windows listener where Windows allows it, otherwise the pop-up reader.
+#[derive(Default)]
+pub struct Held {
+    listener: Option<mirror::Listener>,
+    popups: Option<toast::Watch>,
+}
+
+type Slot = Arc<Mutex<Held>>;
 
 #[derive(Default)]
 pub struct NotificationsAccessories {
@@ -65,27 +73,41 @@ fn wants_mirror(cx: &Ctx) -> bool {
 }
 
 /// Where the mirror stands, for the page. Windows is asked nothing while the mirror is not wanted.
-fn mirror_json(wanted: bool, listening: bool) -> Value {
-    let state = match (wanted, listening) {
-        (false, _) => "off",
-        (true, true) => "on",
-        // Allowed, and Windows still would not let us listen.
-        (true, false) => mirror::missing().unwrap_or("unavailable"),
+fn mirror_json(wanted: bool, held: &Held) -> Value {
+    let state = match (wanted, held.listener.is_some(), held.popups.is_some()) {
+        (false, ..) => "off",
+        (true, true, _) => "on",
+        // Read as they pop up: no signing, no identity.
+        (true, false, true) => "popups",
+        (true, false, false) => "unavailable",
     };
     json!({ "state": state, "registered": wanted && mirror::registered() })
 }
 
 /// The listener follows the setting and what Windows allows: there only while
-/// both say yes. Never asks for anything. Tells the page where things stand.
+/// both say yes. Where it is not allowed (every unsigned build), the pop-up
+/// reader takes its place. Never asks for anything. Tells the page where things stand.
 fn sync_mirror(cx: &Ctx, slot: &Slot, wanted: bool) {
     let mut held = slot.lock().unwrap();
     if !wanted {
-        held.take();
-    } else if held.is_none() && mirror::missing().is_none() {
+        *held = Held::default();
+    } else if held.listener.is_none() && mirror::missing().is_none() {
         let cx = cx.clone();
-        *held = mirror::listen(move |toast| cx.emit(ID, "notification", toast)).ok();
+        held.listener = mirror::listen(move |toast| cx.emit(ID, "notification", toast)).ok();
     }
-    let status = mirror_json(wanted, held.is_some());
+    if held.listener.is_some() {
+        held.popups = None;
+    } else if wanted && held.popups.is_none() {
+        let cx = cx.clone();
+        match toast::watch(move |toast| cx.emit(ID, "notification", toast)) {
+            Ok(watch) => {
+                notch_core::log::line(format!("{ID}: reading pop-up notifications"));
+                held.popups = Some(watch);
+            }
+            Err(err) => notch_core::log::line(format!("{ID}: no pop-up reader: {err}")),
+        }
+    }
+    let status = mirror_json(wanted, &held);
     drop(held);
     cx.emit(ID, "mirror", status);
 }
@@ -112,7 +134,7 @@ impl NotificationsAccessories {
     }
 
     fn status(&self, cx: &Ctx, error: Option<String>) -> Value {
-        let mut status = mirror_json(wants_mirror(cx), self.mirror.lock().unwrap().is_some());
+        let mut status = mirror_json(wants_mirror(cx), &self.mirror.lock().unwrap());
         status["error"] = json!(error);
         status
     }
@@ -130,7 +152,7 @@ impl Feature for NotificationsAccessories {
 
     fn stop(&self, _cx: &Ctx) {
         self.watch.lock().unwrap().take();
-        self.mirror.lock().unwrap().take();
+        *self.mirror.lock().unwrap() = Held::default();
     }
 
     fn settings_changed(&self, cx: &Ctx, settings: &Value) {
@@ -170,11 +192,14 @@ impl Feature for NotificationsAccessories {
                 Ok(self.status(cx, error))
             }
             "remove" => {
-                self.mirror.lock().unwrap().take();
+                self.mirror.lock().unwrap().listener = None;
                 Ok(self.status(cx, mirror::unregister().err()))
             }
             // A click on a mirrored notification: the app that sent it comes forward.
             "open" => {
+                if let Some(app) = args["app"].as_str().filter(|_| args["aumid"].as_str().unwrap_or_default().is_empty()) {
+                    return if toast::open_app(app) { Ok(Value::Null) } else { Err("that app is not running".into()) };
+                }
                 let aumid = args["aumid"].as_str().unwrap_or_default();
                 if aumid.is_empty() || aumid.chars().any(|c| c == '"' || c.is_control()) {
                     return Err("no app to open".into());

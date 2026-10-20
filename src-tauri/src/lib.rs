@@ -1,5 +1,6 @@
 // Lintel for Windows — app wiring and the commands the island calls.
 
+pub mod watchdog;
 mod agent_hooks;
 mod agents;
 mod chat;
@@ -17,6 +18,7 @@ mod pipe;
 mod platform;
 mod recap;
 mod registry;
+mod remote;
 mod session_window;
 mod settings;
 mod shortcuts;
@@ -27,6 +29,7 @@ mod shortcut_rule;
 mod webview_drop;
 mod webview_permission;
 mod winfactory;
+mod wsl;
 
 // What moved to notch-core, under the names the app's modules always used.
 pub(crate) use notch_core::{config_file, files, i18n, log, net, secrets};
@@ -265,6 +268,24 @@ fn reposition(app: AppHandle, shared: State<Shared>) {
     island::apply_geometry(&app, &pref, collapsed);
 }
 
+/// The page reports its pixel ratio; the web view's zoom is corrected when it
+/// differs from the window's scale. True when the zoom changed.
+#[tauri::command]
+fn fit_zoom(app: AppHandle, dpr: f64) -> bool {
+    static ZOOM: Mutex<f64> = Mutex::new(1.0);
+    let Some(win) = island::window(&app) else { return false };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let mut zoom = ZOOM.lock().unwrap();
+    match island::zoom_correction(*zoom, scale, dpr) {
+        Some(z) => {
+            *zoom = z;
+            let _ = win.set_zoom(z);
+            true
+        }
+        None => false,
+    }
+}
+
 /// The displays, for the page's placement rules (src/island/place.ts).
 #[tauri::command]
 fn island_displays(app: AppHandle) -> Vec<island::DisplayInfo> {
@@ -316,6 +337,10 @@ fn open_in_vscode(path: Option<String>) -> bool {
     // or `$` in a folder name as syntax. Finding the launcher ourselves and
     // handing the path over as a separate argument keeps it a path.
     let path = path.filter(|p| !p.is_empty());
+    // A session in WSL reports a Linux path: it opens from the distro's share (wsl.rs).
+    if let Some(linux) = path.as_deref().filter(|p| p.starts_with('/')) {
+        return wsl::open_in_editor(linux, true);
+    }
     // It arrives in a hook payload: only an existing folder, given by its full
     // path, goes any further. `code` would read `--something` as an option, and
     // xdg-open would launch a file with whatever handles its type.
@@ -359,6 +384,10 @@ async fn open_session(app: AppHandle, session_id: Option<String>, path: Option<S
 }
 
 fn jump_to_session(app: &AppHandle, session_id: Option<String>, path: Option<String>, owner: Option<String>) -> bool {
+    // A session on an SSH host: nothing here is its window (remote.rs).
+    if let Some(opened) = remote::open_session(session_id.as_deref(), path.as_deref()) {
+        return opened;
+    }
     let folder = path.as_deref().map(session_window::folder_name).unwrap_or_default().to_string();
     let found = session_id
         .as_deref()
@@ -406,6 +435,9 @@ fn diff_file(path: &str) -> Option<&std::path::Path> {
 /// xdg-open or Explorer would run a script that Claude just wrote.
 #[tauri::command]
 fn open_file_in_vscode(path: String) -> bool {
+    if path.starts_with('/') {
+        return wsl::open_in_editor(&path, false);
+    }
     let Some(file) = diff_file(&path) else { return false };
     if let Some(code) = platform::find_on_path("code") {
         let mut cmd = Command::new(code);
@@ -441,6 +473,18 @@ fn set_paused(app: tauri::AppHandle, paused: bool) {
 #[tauri::command]
 fn hooks_status() -> HookStatus {
     hooks::status()
+}
+
+/// The session code view: a few lines of a file the session changed, inside its folder only.
+#[tauri::command]
+async fn session_file_lines(cwd: String, path: String, from: usize, count: usize) -> Option<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(move || session_window::file_lines(&cwd, &path, from, count)).await.ok().flatten()
+}
+
+/// Claude Code sessions already running: (session id, folder).
+#[tauri::command]
+async fn running_sessions() -> Vec<(String, String)> {
+    tauri::async_runtime::spawn_blocking(hooks::running_sessions).await.unwrap_or_default()
 }
 
 /// Pill ID → whether that agent's hooks reach Lintel. Read-only.
@@ -665,7 +709,7 @@ fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), String> 
         return Err("use local_set_key".into());
     }
     // An address a key would not be sent to is not stored either (net.rs).
-    if key == "n8n-url" && !value.trim().is_empty() {
+    if (key == "n8n-url" || key == "forge-url") && !value.trim().is_empty() {
         net::keyed_url(&value)?;
     }
     let before = (key == "github-token").then(|| secrets::get(&key));
@@ -712,7 +756,10 @@ async fn refresh_integration(app: AppHandle, id: String) {
 /// The GitHub card was opened: refetch its `section` ("pulse" or "activity")
 /// if it is stale. The pollers still decline while the pill is off or paused.
 #[tauri::command]
-fn github_refresh(app: AppHandle, section: String) {
+fn github_refresh(app: AppHandle, section: String, dirs: Option<Vec<String>>) {
+    if let Some(dirs) = dirs {
+        github::set_session_dirs(dirs);
+    }
     if registry::is_running(&app, "integrations") {
         integrations::github_refresh_if_stale(&section);
     }
@@ -821,11 +868,14 @@ pub fn run() {
             set_poll_rest,
             feature_action,
             reposition,
+            fit_zoom,
             list_monitors,
             open_url,
             open_in_vscode,
             open_session,
             auto_launched,
+            running_sessions,
+            session_file_lines,
             open_file_in_vscode,
             quit_app,
             hooks_status,
@@ -835,6 +885,13 @@ pub fn run() {
             agent_hooks_list,
             agent_hooks_preview,
             agent_hooks_apply,
+            wsl::wsl_hooks_list,
+            wsl::wsl_hooks_preview,
+            wsl::wsl_hooks_apply,
+            remote::ssh_hosts,
+            remote::ssh_hosts_set,
+            remote::ssh_hooks_preview,
+            remote::ssh_hooks_apply,
             status_line_preview,
             status_line_apply,
             codex_plan_usage,
@@ -877,6 +934,8 @@ pub fn run() {
             registry::feature_set_enabled,
             sounds::custom_sounds,
             sounds::custom_sound,
+            sounds::set_custom_sound,
+            sounds::reset_custom_sound,
             sounds::reveal_sounds_folder,
             sounds::reload_sounds,
         ])
@@ -886,7 +945,13 @@ pub fn run() {
             if let Some(what) = &migrated {
                 log::line(what);
             }
+            watchdog::start();
             winfactory::create_settings(&handle);
+            // The Run entry names the exe it was written for: a moved or reinstalled app is
+            // written again with the path it runs from now.
+            if loaded.autostart {
+                let _ = handle.autolaunch().enable();
+            }
             // Every feature that is switched on, before the island shows: the
             // relay pipe, the pollers, the drop handler. A disabled one starts
             // nothing. The tray menu and the shortcuts are made from what runs.

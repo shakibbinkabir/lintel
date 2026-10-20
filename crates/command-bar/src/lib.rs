@@ -14,6 +14,7 @@ pub mod emoji;
 pub mod math;
 pub mod rows;
 pub mod search;
+pub mod selection;
 pub mod units;
 
 use std::os::windows::process::CommandExt;
@@ -53,7 +54,8 @@ static MANIFEST: Manifest = Manifest {
     shortcuts: &[ShortcutDef { id: "toggle", label: "Open the command bar", default: Some("Ctrl+Space") }],
     tray: &[],
     // links: `name = address or folder`, one per line. fileFolders: folders to look for files in, one per line.
-    defaults: r#"{ "links": "", "fileFolders": "" }"#,
+    // selectionBar: a small bar beside text selected in any app (off: it watches the mouse while on).
+    defaults: r#"{ "links": "", "fileFolders": "", "selectionBar": false }"#,
 };
 
 /// The bar is on screen: who had the keyboard before it, and the bar's own window.
@@ -429,6 +431,20 @@ fn act(state: &Shared, cx: &Ctx, args: &Value) -> Result<Value, String> {
 #[derive(Default)]
 pub struct CommandBar {
     state: Shared,
+    /// The selection bar's watch, while its option is on.
+    watch: Mutex<Option<selection::Watch>>,
+}
+
+impl CommandBar {
+    fn arm(&self, cx: &Ctx) {
+        let mut watch = self.watch.lock().unwrap_or_else(|e| e.into_inner());
+        let on = cx.settings(ID)["selectionBar"].as_bool() == Some(true);
+        if on && watch.is_none() {
+            *watch = Some(selection::watch(cx));
+        } else if !on && watch.take().is_some() {
+            cx.window().close(selection::LABEL);
+        }
+    }
 }
 
 impl Feature for CommandBar {
@@ -441,10 +457,18 @@ impl Feature for CommandBar {
         let mut s = lock(&self.state);
         s.learned = storage::json_load(&file);
         s.file = Some(file);
+        drop(s);
+        self.arm(cx);
         Ok(())
     }
 
+    fn settings_changed(&self, cx: &Ctx, _settings: &Value) {
+        self.arm(cx);
+    }
+
     fn stop(&self, cx: &Ctx) {
+        self.watch.lock().unwrap_or_else(|e| e.into_inner()).take();
+        cx.window().close(selection::LABEL);
         close(&self.state, cx, true);
         cx.window().close(LABEL);
         *lock(&self.state) = State::default();
@@ -478,6 +502,18 @@ impl Feature for CommandBar {
             "icon" => {
                 let png = svc_shell::icon(args["picture"].as_str().unwrap_or_default(), 32)?;
                 Ok(json!(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png))))
+            }
+            // The selection bar's page: the text it was shown for, a copy to the clipboard, and its end.
+            "selection-get" => Ok(json!(self.watch.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|w| w.text.lock().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_default())),
+            "selection-copy" => {
+                copy(args["text"].as_str().unwrap_or_default())?;
+                Ok(Value::Null)
+            }
+            "selection-hide" => {
+                if let Some(w) = self.watch.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    selection::hide(cx, &w.text);
+                }
+                Ok(Value::Null)
             }
             "run" => run(state, cx, &args),
             // A row of another feature ran, in the page: it counts like the bar's own.

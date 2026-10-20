@@ -362,6 +362,8 @@
       "ru": "Обновить сейчас",
       "id": "Segarkan sekarang"
     },
+    "Event descriptions": { "en": "Event descriptions" },
+    "Shows the text of an event under its title. Long text opens when you click it.": { "en": "Shows the text of an event under its title. Long text opens when you click it." },
     "Countdown": {
       "en": "Countdown",
       "zh-Hans": "倒计时",

@@ -36,6 +36,6 @@ test("approval cards are for the agents the relay answers, no one else", () => {
   // Must match takes_decisions() in hook/src/reply.rs.
   // A Claude Desktop session is Claude Code itself: the relay runs for it
   // without `--agent`, which is the one that takes decisions.
-  assert.deepEqual([...APPROVAL_AGENTS].sort(), ["claude-desktop", "codex", "copilot", "muse"]);
-  assert.deepEqual([...QUESTION_AGENTS], ["claude-desktop"]);
+  assert.deepEqual([...APPROVAL_AGENTS].sort(), ["antigravity", "claude-desktop", "codex", "copilot", "cursor", "kiro", "muse", "opencode"]);
+  assert.deepEqual([...QUESTION_AGENTS], ["claude-desktop", "opencode"]);
 });

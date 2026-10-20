@@ -205,10 +205,10 @@ test("showing the GitHub card asks Rust for a refresh, once per showing", () => 
   State.mode = "expanded";
   State.notify();
   State.notify();
-  assert.deepEqual(sent("github_refresh"), [{ section: "pulse" }]);
+  assert.deepEqual(sent("github_refresh"), [{ section: "pulse", dirs: [] }]);
   State.setFocus("integration_claude");
   State.setFocus(GITHUB);
-  assert.deepEqual(sent("github_refresh"), [{ section: "pulse" }, { section: "pulse" }]);
+  assert.deepEqual(sent("github_refresh"), [{ section: "pulse", dirs: [] }, { section: "pulse", dirs: [] }]);
 });
 
 // ── The lists from the keyboard (GitHubDetailView: ⌘↓ ⌘↑ ⌘O) ──────────────────

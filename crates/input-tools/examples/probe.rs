@@ -358,6 +358,11 @@ fn exercise(own: isize) -> bool {
     // The wheel: a whole notch is a mouse and is turned round, a part notch is a touchpad and is not.
     p.wheel("wheel inverted (a mouse notch)", 120, -120);
     p.wheel("wheel left alone (a touchpad step)", 40, 40);
+    // "Reverse the touchpad": a part notch is turned round, a whole notch is left alone.
+    engine.apply(Config { pad_vertical: true, probe: true, ..Default::default() });
+    p.wheel("touchpad step turned round (reverse the touchpad)", 40, -40);
+    p.wheel("mouse notch left alone (reverse the touchpad)", 120, 120);
+    engine.apply(config(&exe, None));
     // With Shift held (and only Shift) a notch away from the user goes to the left.
     clear_field();
     if p.keys("sideways", &[key(0x10, true)]) {

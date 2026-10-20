@@ -101,6 +101,7 @@ pub enum Agent {
     OpenCode,
     Amp,
     Hermes,
+    Kiro,
 }
 
 impl Agent {
@@ -114,6 +115,7 @@ impl Agent {
         Agent::OpenCode,
         Agent::Amp,
         Agent::Hermes,
+        Agent::Kiro,
     ];
 
     /// The `--agent` name; the pill is `agent_<id>` (PillCatalog.swift).
@@ -128,6 +130,7 @@ impl Agent {
             Agent::OpenCode => "opencode",
             Agent::Amp => "amp",
             Agent::Hermes => "hermes",
+            Agent::Kiro => "kiro",
         }
     }
 
@@ -147,6 +150,7 @@ impl Agent {
             // OpenCode and Amp read ~/.config on Windows too.
             Agent::OpenCode => vec![home.join(".config").join("opencode").join("plugins").join(format!("{}.js", notch_brand::SLUG))],
             Agent::Amp => vec![home.join(".config").join("amp").join("plugins").join(format!("{}.ts", notch_brand::SLUG))],
+            Agent::Kiro => vec![home.join(".kiro").join("hooks").join(format!("{}.json", notch_brand::SLUG))],
             Agent::Hermes => {
                 let dir = home.join(".hermes").join("plugins").join(notch_brand::SLUG);
                 vec![dir.join("__init__.py"), dir.join("plugin.yaml")]
@@ -229,6 +233,11 @@ impl Agent {
                     .collect();
                 Box::new(move |v| muse_install(v, &commands).map(Some))
             }
+            (Agent::Kiro, false) => Box::new(|v| kiro_check(v).map(|_| None)),
+            (Agent::Kiro, true) => {
+                let file = kiro_file(relay);
+                Box::new(move |v| kiro_check(v).map(|_| Some(file.clone())))
+            }
             // Plugins are whole files (see `plugin`), never merged into JSON.
             (Agent::OpenCode | Agent::Amp | Agent::Hermes, _) => {
                 Box::new(|_| Err(crate::i18n::t("This agent takes a plugin, not hook entries.")))
@@ -260,6 +269,7 @@ impl Agent {
                 .and_then(Value::as_object)
                 .is_some_and(|h| h.values().filter_map(Value::as_array).flatten().any(copilot_entry_is_ours)),
             Agent::Muse => groups_have_ours(&json(), "muse"),
+            Agent::Kiro => kiro_is_ours(&json()) && json().get("hooks").is_some(),
             Agent::OpenCode | Agent::Amp | Agent::Hermes => false,
         }
     }
@@ -267,7 +277,7 @@ impl Agent {
     /// Whether the island can answer this agent's permission requests. Must
     /// match `takes_decisions` in the relay (hook/src/reply.rs).
     fn approvals(self) -> bool {
-        matches!(self, Agent::Codex | Agent::Copilot | Agent::Muse)
+        matches!(self, Agent::Codex | Agent::Copilot | Agent::Muse | Agent::Cursor | Agent::Kiro | Agent::Antigravity | Agent::OpenCode)
     }
 }
 
@@ -287,6 +297,7 @@ impl Agent {
             Agent::OpenCode => "OpenCode",
             Agent::Amp => "Amp",
             Agent::Hermes => "Hermes Agent",
+            Agent::Kiro => "Kiro CLI",
         }
     }
 
@@ -302,6 +313,7 @@ impl Agent {
             Agent::Muse => t("Start a new Muse Code session to pick the hooks up."),
             Agent::OpenCode => t("Restart OpenCode to load the plugin."),
             Agent::Amp => t("Restart Amp to load the plugin."),
+            Agent::Kiro => t("Start a new Kiro CLI session to pick the hooks up."),
             Agent::Hermes => t("Turn it on once with `hermes plugins enable {slug}`, then start a new Hermes session."),
         }
     }
@@ -535,9 +547,10 @@ fn gemini_install(root: &Value, commands: &[(String, String, u64)]) -> Result<Va
 //
 // Hooks are named groups at the top level; Lintel's is `lintel`. Tool events
 // take matcher groups, lifecycle events take handlers directly; timeouts are
-// in seconds. Merge and removal come from #298 (kobaltgit). The relay answers
-// PreToolUse with "{}" — no decision — never with an allow: Antigravity's own
-// permission rules stay in charge.
+// in seconds. Merge and removal come from #298 (kobaltgit). The PreToolUse of a
+// command or a file write waits for a click in the island (the relay makes it a
+// PermissionRequest): Allow carries the exact grant for that one call, and no
+// click is "ask", so Antigravity's own prompt and rules stay in charge.
 
 const ANTIGRAVITY_TOOL_EVENTS: &[&str] = &["PreToolUse", "PostToolUse"];
 const ANTIGRAVITY_LIFECYCLE_EVENTS: &[&str] = &["PreInvocation", "PostInvocation", "Stop"];
@@ -547,7 +560,8 @@ fn antigravity_block(relay: &Relay) -> Value {
         json!({
             "type": "command",
             "command": relay.command(Shell::Cmd, &format!("--agent antigravity {event}")),
-            "timeout": 10,
+            // A tool event waits for a click in the island (120 s); the others fire and forget.
+            "timeout": if ANTIGRAVITY_TOOL_EVENTS.contains(&event) { 120 } else { 10 },
         })
     };
     let mut block = Map::new();
@@ -588,22 +602,33 @@ fn antigravity_uninstall(root: &Value) -> Result<Value, String> {
 //
 // `{"version": 1, "hooks": {"<event>": [{"command": …}]}}`, camelCase events
 // (from #231, BeyondBirthday07). The relay maps them, turns a stop with
-// `status: "error"` into StopFailure, and prints nothing back: no permission is
-// ever given on Cursor's behalf. Every session lands on the one `agent_cursor`
-// pill.
+// `status: "error"` into StopFailure, and prints nothing back except the
+// answer to a shell command a human clicked. Every session lands on the one
+// `agent_cursor` pill.
 
-const CURSOR_EVENTS: &[&str] = &[
-    "sessionStart",
-    "sessionEnd",
-    "beforeSubmitPrompt",
-    "preToolUse",
-    "postToolUse",
-    "postToolUseFailure",
-    "stop",
+/// Event and, where it waits for a click, its timeout in seconds. A shell command
+/// (`beforeShellExecution`) is a card to Allow or Deny; `afterFileEdit` is the
+/// live diff. Hooks installed before these two existed need a reinstall.
+const CURSOR_EVENTS: &[(&str, Option<u64>)] = &[
+    ("sessionStart", None),
+    ("sessionEnd", None),
+    ("beforeSubmitPrompt", None),
+    ("preToolUse", None),
+    ("postToolUse", None),
+    ("postToolUseFailure", None),
+    ("beforeShellExecution", Some(120)),
+    ("afterFileEdit", None),
+    ("stop", None),
 ];
 
 fn cursor_install(root: &Value, command: &str) -> Result<Value, String> {
-    let events = CURSOR_EVENTS.iter().map(|e| (e.to_string(), json!({ "command": command })));
+    let events = CURSOR_EVENTS.iter().map(|(e, timeout)| {
+        let mut entry = json!({ "command": command });
+        if let Some(t) = timeout {
+            entry["timeout"] = json!(t);
+        }
+        (e.to_string(), entry)
+    });
     let mut root = groups_install(root, "cursor", events)?;
     root.entry("version").or_insert(json!(1));
     Ok(Value::Object(root))
@@ -745,6 +770,54 @@ fn muse_install(root: &Value, commands: &[(String, String, u64)]) -> Result<Valu
     Ok(Value::Object(root))
 }
 
+// ── Kiro CLI — ~/.kiro/hooks/lintel.json ──────────────────────────────────────
+//
+// A file of Lintel's alone, written whole and refused when it holds anything
+// else. A shell command's PreToolUse waits for a click (the relay makes it a
+// PermissionRequest); a deny exits 2, which Kiro reads as "blocked". (After
+// upstream pull request 724.)
+
+/// Kiro CLI's triggers, with their timeouts in seconds.
+const KIRO_EVENTS: &[(&str, u64)] = &[
+    ("SessionStart", 10),
+    ("SessionEnd", 10),
+    ("UserPromptSubmit", 10),
+    ("PreToolUse", 120),
+    ("PostToolUse", 10),
+    ("Stop", 10),
+];
+
+fn kiro_file(relay: &Relay) -> Value {
+    let hooks: Vec<Value> = KIRO_EVENTS
+        .iter()
+        .map(|(event, timeout)| {
+            json!({
+                "name": format!("{}-{event}", notch_brand::SLUG),
+                "trigger": event,
+                "action": { "type": "command", "command": relay.command(Shell::Cmd, &format!("--agent kiro {event}")) },
+                "timeout": timeout,
+                "enabled": true,
+            })
+        })
+        .collect();
+    json!({ "version": "v1", "hooks": hooks })
+}
+
+/// Empty, or nothing but Lintel's hooks.
+fn kiro_is_ours(root: &Value) -> bool {
+    let Some(obj) = root.as_object() else { return false };
+    let Some(hooks) = obj.get("hooks") else { return obj.is_empty() };
+    hooks.as_array().is_some_and(|list| list.iter().all(|h| is_our_command(h.get("action").and_then(|a| a.get("command")), "kiro")))
+}
+
+/// A file Lintel did not write is never replaced or removed.
+fn kiro_check(root: &Value) -> Result<(), String> {
+    if kiro_is_ours(root) {
+        return Ok(());
+    }
+    Err(crate::i18n::tf("{name} wasn't written by {app} — {app} has not touched it.", &[("name", &format!("{}.json", notch_brand::SLUG))]))
+}
+
 // ── Plugins: OpenCode, Amp, Hermes ────────────────────────────────────────────
 //
 // These agents load code rather than run hook commands. The Mac's plugins
@@ -775,9 +848,16 @@ fn plugin_edit(path: PathBuf, content: String, install: bool) -> FileEdit<'stati
     FileEdit { path, edit }
 }
 
+// OpenCode 2 loads only a default export `{ id, setup }` and names a turn's
+// start and end `session.execution.*`, the session id in `event.data`; the
+// named export stays for OpenCode 1, which also finds it as `server`. (After
+// upstream pull requests 530, 557 and 808; OpenCode 2's names come from them.)
+// debt: events are told apart by id within one process only; instances in separate processes would each forward one (the island's turn logic takes repeats as late).
 const OPENCODE_PLUGIN: &str = r#"// Lintel plugin for OpenCode — generated by Lintel.
 // Forwards OpenCode's events to Lintel's relay (lintel-hook), fire-and-forget:
-// OpenCode never waits on it, and nothing happens when Lintel is closed.
+// OpenCode never waits on it, and nothing happens when Lintel is closed. Two
+// things do wait, for a click in the island: a question and a permission request.
+// With no answer (Lintel closed, nobody clicked) OpenCode's own prompt stays as it is.
 import { spawn } from 'node:child_process';
 
 const HOOK = {HOOK};
@@ -786,7 +866,21 @@ const EVENT_MAP = {
   'session.idle': 'Stop',
   'session.error': 'StopFailure',
   'session.deleted': 'SessionEnd',
+  // OpenCode 2.
+  'session.execution.started': 'UserPromptSubmit',
+  'session.execution.succeeded': 'Stop',
+  'session.execution.failed': 'StopFailure',
 };
+
+// OpenCode 2 runs one instance per folder, and each sees every event: one relay per event id.
+const SEEN = new Set();
+function firstTime(id) {
+  if (!id) return true;
+  if (SEEN.has(id)) return false;
+  SEEN.add(id);
+  if (SEEN.size > 256) SEEN.delete(SEEN.values().next().value);
+  return true;
+}
 
 function forward(hook_event_name, payload) {
   try {
@@ -802,32 +896,157 @@ function forward(hook_event_name, payload) {
   } catch {}
 }
 
-export const lintelPlugin = async ({ directory } = {}) => ({
-  event: async ({ event }) => {
-    const hook_event_name = EVENT_MAP[event?.type];
-    if (!hook_event_name) return;
-    const props = event.properties || {};
-    forward(hook_event_name, {
-      session_id: props.sessionID || props.info?.id || '',
-      cwd: directory || '',
+// A request the island is asked about: OpenCode's request id -> the relay waiting for it.
+const WAITING = new Map();
+const WAIT_MS = 115_000;
+
+// The relay's word for `payload`, or null: the app is closed, nobody clicked, time ran out.
+function ask(id, payload) {
+  return new Promise((resolve) => {
+    let out = '';
+    let timer;
+    let done = false;
+    let p;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      WAITING.delete(id);
+      try {
+        resolve(JSON.parse(out.trim().split('\n')[0])?.hookSpecificOutput?.decision ?? null);
+      } catch {
+        resolve(null);
+      }
+    };
+    try {
+      p = spawn(HOOK, ['--agent', 'opencode'], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    } catch {
+      resolve(null);
+      return;
+    }
+    WAITING.set(id, p);
+    timer = setTimeout(() => { try { p.kill(); } catch {} finish(); }, WAIT_MS);
+    p.on('error', finish);
+    p.on('close', finish);
+    p.stdout.on('data', (chunk) => { out += chunk.toString(); });
+    p.stdin.on('error', () => {});
+    p.stdin.end(JSON.stringify({ hook_event_name: 'PermissionRequest', ...payload }) + '\n');
+  });
+}
+
+// OpenCode's question tool on the island's question card. Only a question the card
+// can show (2 to 4 questions, each with at least 2 options) is asked; anything else
+// stays in OpenCode.
+async function askQuestion(props, directory, client) {
+  const id = typeof props.id === 'string' ? props.id : '';
+  const asked = Array.isArray(props.questions) ? props.questions : [];
+  const questions = asked.map((q) => ({
+    question: typeof q?.question === 'string' ? q.question : '',
+    options: (Array.isArray(q?.options) ? q.options : [])
+      .filter((o) => o && typeof o.label === 'string' && o.label)
+      .map((o) => ({ label: o.label, description: typeof o.description === 'string' ? o.description : '' })),
+    multiSelect: q?.multiple === true,
+  }));
+  if (!id || questions.length === 0 || questions.length > 4 || questions.some((q) => !q.question || q.options.length < 2)) return;
+  const decision = await ask(id, {
+    session_id: props.sessionID || '',
+    cwd: directory || '',
+    tool_name: 'AskUserQuestion',
+    tool_input: { questions },
+  });
+  const answers = decision?.behavior === 'allow' ? decision.updatedInput?.answers : null;
+  if (!answers || typeof answers !== 'object') return;
+  try {
+    await client?._client?.post({
+      url: '/question/' + encodeURIComponent(id) + '/reply',
+      body: { answers: questions.map((q) => (Array.isArray(answers[q.question]) ? answers[q.question] : typeof answers[q.question] === 'string' ? [answers[q.question]] : [])) },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     });
-  },
-  'tool.execute.before': async (input, output) => {
-    forward('PreToolUse', {
-      session_id: input?.sessionID || '',
-      cwd: directory || '',
-      tool_name: typeof input?.tool === 'string' ? input.tool : '',
-      tool_input: output?.args ?? null,
-    });
-  },
-  'tool.execute.after': async (input) => {
-    forward('PostToolUse', {
-      session_id: input?.sessionID || '',
-      cwd: directory || '',
-      tool_name: typeof input?.tool === 'string' ? input.tool : '',
-    });
-  },
+  } catch {}
+}
+
+const permissionAsk = (directory) => async (input, output) => {
+  const m = input?.metadata || {};
+  const decision = await ask(input?.id || '', {
+    session_id: input?.sessionID || '',
+    cwd: directory || '',
+    tool_name: typeof input?.type === 'string' ? input.type : 'tool',
+    tool_input: {
+      command: typeof m.command === 'string' ? m.command : undefined,
+      file_path: typeof m.filePath === 'string' ? m.filePath : undefined,
+      pattern: typeof input?.pattern === 'string' ? input.pattern : Array.isArray(input?.pattern) ? input.pattern.join(' ') : undefined,
+      title: typeof input?.title === 'string' ? input.title : undefined,
+    },
+  });
+  output.status = decision?.behavior === 'allow' ? 'allow' : decision?.behavior === 'deny' ? 'deny' : 'ask';
+};
+
+function onEvent(event, directory, client) {
+  const props = event?.properties || {};
+  // Answered in OpenCode itself: the relay hangs up and the card goes.
+  if (/^(question|permission)\.(replied|rejected)$/.test(event?.type || '')) {
+    const p = WAITING.get(props.requestID || props.permissionID || props.id);
+    try { p?.kill(); } catch {}
+    return;
+  }
+  if (event?.type === 'question.asked') {
+    if (firstTime('q:' + props.id)) void askQuestion(props, directory, client);
+    return;
+  }
+  const hook_event_name = EVENT_MAP[event?.type];
+  if (!hook_event_name || !firstTime(event?.id)) return;
+  forward(hook_event_name, {
+    session_id: event?.data?.sessionID || props.sessionID || props.info?.id || '',
+    cwd: event?.location?.directory || directory || '',
+  });
+}
+
+const beforeTool = (directory) => async (input, output) => {
+  forward('PreToolUse', {
+    session_id: input?.sessionID || '',
+    cwd: directory || '',
+    tool_name: typeof input?.tool === 'string' ? input.tool : '',
+    tool_input: output?.args ?? input?.input ?? null,
+  });
+};
+
+const afterTool = (directory) => async (input) => {
+  forward('PostToolUse', {
+    session_id: input?.sessionID || '',
+    cwd: directory || '',
+    tool_name: typeof input?.tool === 'string' ? input.tool : '',
+  });
+};
+
+// OpenCode 1.
+export const lintelPlugin = async ({ directory, client } = {}) => ({
+  event: async ({ event }) => onEvent(event, directory, client),
+  'permission.ask': permissionAsk(directory),
+  'tool.execute.before': beforeTool(directory),
+  'tool.execute.after': afterTool(directory),
 });
+
+// OpenCode 2.
+export default {
+  id: 'lintel',
+  server: lintelPlugin,
+  setup: async (ctx = {}) => {
+    const directory = ctx.location?.directory || ctx.directory || '';
+    const controller = new AbortController();
+    if (ctx.event?.subscribe) {
+      (async () => {
+        try {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) onEvent(event, directory, ctx.client);
+        } catch {}
+      })();
+    }
+    try {
+      await ctx.tool?.hook?.('execute.before', beforeTool(directory));
+      await ctx.tool?.hook?.('execute.after', afterTool(directory));
+    } catch {}
+    return () => controller.abort();
+  },
+};
 "#;
 
 const AMP_PLUGIN: &str = r#"// Lintel plugin for Amp — generated by Lintel.
@@ -1157,9 +1376,12 @@ mod tests {
         let existing = r#"{"version":1,"hooks":{"afterFileEdit":[{"command":"./format.sh"}],"stop":[{"command":"./notify.sh"}]}}"#;
         let (home, installed, removed) = round_trip(Agent::Cursor, Some(existing));
         assert_eq!(installed["version"], 1);
-        for event in CURSOR_EVENTS {
+        for (event, timeout) in CURSOR_EVENTS {
             let last = installed["hooks"][event].as_array().unwrap().last().unwrap().clone();
             assert!(last["command"].as_str().unwrap().ends_with("--agent cursor"), "{event}");
+            if let Some(t) = timeout {
+                assert_eq!(last["timeout"], *t, "{event}");
+            }
         }
         assert_eq!(installed["hooks"]["stop"][0]["command"], "./notify.sh");
         assert_eq!(installed["hooks"]["afterFileEdit"][0]["command"], "./format.sh");
@@ -1252,9 +1474,51 @@ mod tests {
     }
 
     #[test]
-    fn only_codex_copilot_and_muse_take_approvals() {
+    fn the_agents_that_take_approvals_are_the_relays() {
         let with: Vec<&str> = Agent::ALL.iter().filter(|a| a.approvals()).map(|a| a.id()).collect();
-        assert_eq!(with, ["codex", "copilot", "muse"]);
+        assert_eq!(with, ["codex", "copilot", "muse", "antigravity", "cursor", "opencode", "kiro"]);
+    }
+
+    #[test]
+    fn kiros_file_is_written_whole_and_removed_whole() {
+        let (home, installed, removed) = round_trip(Agent::Kiro, None);
+        assert_eq!(installed["version"], "v1");
+        let hooks = installed["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), KIRO_EVENTS.len());
+        let pre = hooks.iter().find(|h| h["trigger"] == "PreToolUse").unwrap();
+        assert_eq!(pre["timeout"], 120);
+        assert!(pre["action"]["command"].as_str().unwrap().ends_with("--agent kiro PreToolUse"));
+        assert!(removed.is_none());
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_kiro_hook_file_lintel_did_not_write_is_left_alone() {
+        let home = scratch("kiro-foreign");
+        let file = Agent::Kiro.files(&home)[0].clone();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let theirs = r#"{"version":"v1","hooks":[{"name":"lint","trigger":"Stop","action":{"type":"command","command":"npm run lint"}}]}"#;
+        std::fs::write(&file, theirs).unwrap();
+        for install in [true, false] {
+            assert!(config_file::preview(&Agent::Kiro.edits(&home, &linux(), install)).is_err());
+        }
+        assert!(!Agent::Kiro.installed(&home));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn the_opencode_plugin_loads_on_opencode_1_and_2() {
+        // OpenCode 2 wants a default `{ id, setup }`; OpenCode 1.x reads a default
+        // with an id as `{ id, server }`, older ones the named export.
+        for needle in [
+            "export default {", "id: 'lintel'", "server: lintelPlugin", "setup: async (ctx = {}) => {",
+            "export const lintelPlugin", "'session.execution.succeeded': 'Stop'", "'session.idle': 'Stop'",
+            "event?.data?.sessionID", "ctx.location?.directory",
+        ] {
+            assert!(OPENCODE_PLUGIN.contains(needle), "{needle}");
+        }
+        assert!(is_our_plugin(OPENCODE_PLUGIN));
     }
 
     #[test]

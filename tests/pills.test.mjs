@@ -17,6 +17,7 @@ test("the catalog holds the Mac's pills, in the Mac's order, with the Mac's valu
   const mac = [
     ["integration_claude", "VS Code", "#F5F6F8", "workspace", "Integration"],
     ["agent_cursor", "Cursor", "#C0C4CC", "workspace", "Integration"],
+    ["agent_jetbrains", "JetBrains", "#FF318C", "workspace", "Integration"],
     ["agent_antigravity", "Antigravity", "#E879F9", "workspace", "Integration"],
     ["agent_codex", "Codex", "#2DD4BF", "workspace", "Integration"],
     ["agent_gemini", "Gemini CLI", "#8AB4F8", "agent", "Agent"],
@@ -25,6 +26,7 @@ test("the catalog holds the Mac's pills, in the Mac's order, with the Mac's valu
     ["agent_opencode", "OpenCode", "#4ADE80", "agent", "Agent"],
     ["agent_amp", "Amp", "#F59E0B", "agent", "Agent"],
     ["agent_hermes", "Hermes", "#C084FC", "agent", "Agent"],
+    ["agent_kiro", "Kiro", "#9046FF", "agent", "Agent"],
     ["agent_claude-desktop", "Claude Desktop", "#D97757", "agent", "Agent"],
     ["ai_anthropic", "Anthropic", "#E07950", "ai", "Chat"],
     ["ai_google", "Google AI", "#4285F4", "ai", "Chat"],
@@ -38,6 +40,7 @@ test("the catalog holds the Mac's pills, in the Mac's order, with the Mac's valu
     ["integration_notion", "Notion", "#8C8C8C", "service", "Integration"],
     ["integration_calcom", "Cal.com", "#C9956A", "service", "Integration"],
     ["integration_stripe", "Stripe", "#0570DE", "service", "Integration"],
+    ["integration_linear", "Linear", "#5E6AD2", "service", "Integration"],
     ["integration_music", "Apple Music", "#FA2D48", "service", "Integration"],
   ];
   assert.deepEqual(
@@ -84,7 +87,7 @@ test("no chat provider that works here says Coming soon", () => {
 
 test("the main pill is a workspace tool that works here", () => {
   assert.deepEqual(mainPillChoices("linux").map((p) => p.id), [
-    "integration_claude", "agent_cursor", "agent_antigravity", "agent_codex",
+    "integration_claude", "agent_cursor", "agent_jetbrains", "agent_antigravity", "agent_codex",
   ]);
   assert.equal(DEFAULT_MAIN_PILL, "integration_claude");
 });
@@ -132,15 +135,22 @@ test("a declaration from an older or edited settings file is made usable", () =>
   );
 });
 
-test("up to four pills next to the main one, never the main one itself", () => {
+test("any number of pills next to the main one, never the main one itself", () => {
   const d = {
     mainPill: "integration_claude",
     activeIntegrations: ["integration_n8n", "integration_github", "integration_stripe"],
   };
-  const four = toggleDeclared(d, "agent_gemini", "linux");
-  assert.equal(four.length, MAX_DECLARED);
-  assert.equal(toggleDeclared({ ...d, activeIntegrations: four }, "ai_anthropic", "linux"), null);
-  assert.equal(toggleDeclared(d, "integration_claude", "linux"), null);
+  assert.deepEqual(toggleDeclared(d, "agent_gemini", "linux"), [...d.activeIntegrations, "agent_gemini"]);
+  // The limit is the catalog itself: every pill on this OS can be declared.
+  assert.ok(MAX_DECLARED >= availablePills("linux").length);
+  let cur = { mainPill: "integration_claude", activeIntegrations: [] };
+  for (const p of availablePills("linux")) {
+    const next = toggleDeclared(cur, p.id, "linux");
+    if (p.id === cur.mainPill) { assert.equal(next, null); continue; }
+    assert.ok(next?.includes(p.id), p.id);
+    cur = { ...cur, activeIntegrations: next };
+  }
+  assert.equal(toggleDeclared(cur, "integration_claude", "linux"), null);
   assert.equal(toggleDeclared(d, "integration_music", "linux"), null);
   assert.equal(toggleDeclared(d, "agent_claude-desktop", "linux"), null);
   assert.ok(toggleDeclared(d, "agent_claude-desktop", "windows").includes("agent_claude-desktop"));
@@ -247,14 +257,14 @@ test("a Claude Code session gets its pill even when it is not loaded", () => {
   assert.equal(State.upsertWorkspacePill("not_a_pill", "x", ""), null);
 });
 
-test("toggling declares up to four pills and never the main one", () => {
+test("toggling declares any number of pills and never the main one", () => {
   State.settings.activeIntegrations = [];
   State.loadIntegrationTasks();
   for (const id of ["integration_n8n", "agent_gemini", "ai_anthropic", "integration_stripe", "integration_github"]) {
     State.toggleIntegration(id);
   }
   assert.deepEqual(State.settings.activeIntegrations, [
-    "integration_n8n", "agent_gemini", "ai_anthropic", "integration_stripe",
+    "integration_n8n", "agent_gemini", "ai_anthropic", "integration_stripe", "integration_github",
   ]);
   State.toggleIntegration("integration_claude");
   assert.ok(ids().includes("integration_claude"));

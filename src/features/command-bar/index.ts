@@ -16,7 +16,7 @@ import { defineFeature, type FeatureCtx } from "../../core/feature";
 import { FEATURES, featureCtx, featureInfos, featureOn, loadFeatures } from "../../core/registry";
 import { displayKeys, type Bindings } from "../../core/shortcuts";
 import type { Settings } from "../../core/state";
-import { btn, card, field, kbd, row, tab } from "../../ui/components";
+import { btn, card, field, iconBtn, kbd, row, tab, toggle } from "../../ui/components";
 import { icon } from "../../ui/icons";
 import { clear, h } from "../../views/dom";
 
@@ -533,6 +533,54 @@ function mountBar(root: HTMLElement, cx: FeatureCtx) {
   drawFoot();
 }
 
+// ── The bar beside selected text ──────────────────────────────────────────────
+
+/** Upper case, then lower case, then each word capitalised, and round again. */
+function nextCase(text: string): string {
+  const upper = text.toUpperCase();
+  const lower = text.toLowerCase();
+  if (text !== upper) return upper;
+  if (text !== lower) return lower;
+  return lower.replace(/(^|\s)(\S)/g, (_, space: string, letter: string) => space + letter.toUpperCase());
+}
+
+/** Never takes focus (Rust shows it that way): a click acts on the text Rust read and the bar goes. */
+function mountSelection(root: HTMLElement, cx: FeatureCtx) {
+  const t = cx.t;
+  let text = "";
+  const done = (note?: string) => {
+    if (note) bar.replaceChildren(h("span", { class: "f-command-bar-sel-note", text: note }));
+    window.setTimeout(() => void cx.call("selection-hide"), note ? 700 : 0);
+  };
+  const copy = async (what: string, note: string) => {
+    await cx.call("selection-copy", { text: what });
+    done(note);
+  };
+  const buttons = [
+    iconBtn("copy", t("Copy"), () => void copy(text, t("Copied"))),
+    iconBtn("link", t("Clean link"), () => {
+      void Bridge.featureCall<{ url: string; removed: string[] } | null>("clipboard", "clean", { text: text.trim() })
+        .catch(() => null)
+        .then((c) => (c ? copy(c.url, c.removed.length ? t("Link copied, clean") : t("Nothing to clean")) : done(t("Not a link"))));
+    }),
+    iconBtn("text", t("Change case"), () => void copy(nextCase(text), t("Copied"))),
+    iconBtn("shelf", t("Keep on the shelf"), () => {
+      void Bridge.featureCall("shelf", "add", { text })
+        .then(() => done(t("Kept")))
+        .catch(() => done(t("The shelf is off")));
+    }),
+  ];
+  const bar = h("div", { class: "win f-command-bar-sel" }, ...buttons);
+  bar.addEventListener("mousedown", (e) => e.preventDefault());
+  root.append(bar);
+  const set = (next: string) => {
+    text = next;
+    bar.replaceChildren(...buttons);
+  };
+  cx.on<{ text: string }>("selection", (e) => set(e.text));
+  void cx.call<string>("selection-get").then((now) => set(now ?? ""));
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 function settingsBody(cx: FeatureCtx): HTMLElement {
@@ -560,6 +608,14 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
         note(t("Folders to look for files in, one per line. ~ is your home folder. Nothing is indexed: the folders are read when you search.")),
         lines("fileFolders", "~\\Documents"),
       ]),
+      h("div", { class: "section-title", text: t("Selected text") }),
+      card([
+        row(
+          t("Show a bar beside selected text"),
+          toggle(s.selectionBar === true, (on) => void cx.settings.patch({ selectionBar: on })),
+          t("After you select text in another app, a small bar offers to copy it, clean a link, change its case or keep it on the shelf. Nothing is read in password fields, and nothing happens until you click."),
+        ),
+      ]),
       h("div", { class: "section-title", text: t("What you use most") }),
       card([row(t("Forget what I use most"), forget, t("The bar puts what you run often first. Pinned rows stay pinned."))]),
     );
@@ -572,5 +628,5 @@ function settingsBody(cx: FeatureCtx): HTMLElement {
 export default defineFeature({
   id: "command-bar",
   settings: settingsBody,
-  windows: { bar: mountBar },
+  windows: { bar: mountBar, selection: mountSelection },
 });

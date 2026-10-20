@@ -21,6 +21,7 @@ use notch_core::storage::{json_load, json_save_atomic};
 use notch_core::{Ctx, Feature, Group, Manifest, Monitor, Use, WindowSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use svc_apps::winget;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
@@ -44,7 +45,8 @@ static MANIFEST: Manifest = Manifest {
     tray: &[],
     // frequency: "off" | "daily" | "weekly" (the automatic check); notify: tell about what it found;
     // store: list Microsoft Store apps too; rules: [{ id, name, version? }] (skip a version, or the app).
-    defaults: r#"{ "frequency": "off", "notify": true, "store": true, "rules": [] }"#,
+    // selfCheck: null until asked once, then true | false (look for a newer Lintel on GitHub); selfAsked: it was asked.
+    defaults: r#"{ "frequency": "off", "notify": true, "store": true, "rules": [], "selfCheck": null, "selfAsked": false }"#,
 };
 
 /// What winget is asked to list the updates. It reads; it accepts nothing for the user.
@@ -100,9 +102,19 @@ struct Ended {
 
 /// What outlives the app: when winget was last asked, and what was already announced.
 #[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Saved {
     last_check: Option<u64>,
     notified: Vec<String>,
+    /// The day (since the epoch) a newer Lintel was last announced: at most once a day.
+    update_day: u64,
+}
+
+/// The installer of the newer release, as GitHub lists it.
+struct Offer {
+    url: String,
+    sha256: String,
+    version: String,
 }
 
 #[derive(Default)]
@@ -134,6 +146,8 @@ struct Inner {
     search: Mutex<Arc<AtomicBool>>,
     /// The feature is off: a list being read is dropped.
     off: AtomicBool,
+    /// What "Update now" downloads: set by the last check, never taken from the page.
+    offer: Mutex<Option<Offer>>,
 }
 
 #[derive(Default)]
@@ -353,25 +367,49 @@ fn search(inner: &Inner, query: &str) -> Result<Value, String> {
     })
 }
 
-/// Reads the release feed and says whether a newer Lintel is out.
-// debt: the feed is not signed yet (no signing key, the repository is private and the product
-// will be renamed), so an update is only offered as its release page in the browser. Downloading
-// and installing by itself waits for the key; nothing here downloads or runs an installer.
+/// Reads GitHub's list of releases and says whether a newer Lintel is out, and which
+/// installer (with GitHub's SHA-256 of it) would update this copy.
 pub fn self_check(running: &str) -> Result<Value, String> {
-    let feed = format!("{REPO}/releases/latest/download/latest.json");
-    let body = tauri::async_runtime::block_on(notch_core::net::bounded_get_following(&feed, Duration::from_secs(20), 256 * 1024))?;
-    let feed: Value = serde_json::from_slice(&body).map_err(|_| t("The update feed could not be read."))?;
-    let latest = feed["version"].as_str().unwrap_or_default().trim().trim_start_matches(['v', 'V']);
+    let api = "https://api.github.com/repos/shakibbinkabir/lintel/releases?per_page=5";
+    let body = tauri::async_runtime::block_on(notch_core::net::bounded_get_following(api, Duration::from_secs(20), 1024 * 1024))?;
+    let list: Value = serde_json::from_slice(&body).map_err(|_| t("The release list could not be read."))?;
+    let release = list.as_array().and_then(|l| l.iter().find(|r| r["draft"] != true && r["prerelease"] != true)).ok_or_else(|| t("The release list could not be read."))?;
+    let latest = release["tag_name"].as_str().unwrap_or_default().trim().trim_start_matches(['v', 'V']);
     if latest.is_empty() || latest.len() > 40 {
-        return Err(t("The update feed could not be read."));
+        return Err(t("The release list could not be read."));
     }
+    let name = format!("lintel-{latest}-setup.exe");
+    let asset = release["assets"].as_array().and_then(|a| a.iter().find(|a| a["name"] == name.as_str()));
+    let sha256 = asset.and_then(|a| a["digest"].as_str()).and_then(|d| d.strip_prefix("sha256:")).filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()));
+    let url = asset.and_then(|a| a["browser_download_url"].as_str()).filter(|u| u.starts_with(&format!("{REPO}/releases/download/")));
     Ok(json!({
         "current": running,
         "latest": latest,
         "newer": logic::release_is_newer(latest, running),
-        "notes": feed["notes"].as_str().unwrap_or_default().chars().take(4000).collect::<String>(),
+        "notes": release["body"].as_str().unwrap_or_default().chars().take(4000).collect::<String>(),
         "page": format!("{REPO}/releases/latest"),
+        "asset": match (url, sha256) { (Some(u), Some(d)) => json!({ "url": u, "sha256": d.to_ascii_lowercase() }), _ => Value::Null },
     }))
+}
+
+/// Downloads the offered installer from GitHub, checks it against GitHub's digest, runs it
+/// and quits so that it can replace the app. Only called after a click on "Update now".
+fn self_update(cx: &Ctx, inner: &Inner) -> Result<(), String> {
+    let Some(Offer { url, sha256, version }) = inner.offer.lock().unwrap().take() else { return Err(t("Check for a new version first.")) };
+    // debt: the installer is held in memory (capped) and hashed in one go.
+    let bytes = tauri::async_runtime::block_on(notch_core::net::bounded_get_following(&url, Duration::from_secs(900), 400 * 1024 * 1024))?;
+    if format!("{:x}", Sha256::digest(&bytes)) != sha256 {
+        return Err(t("The download does not match GitHub's checksum. Nothing was run."));
+    }
+    let dir = std::env::temp_dir().join("lintel-update");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join(format!("lintel-{version}-setup.exe"));
+    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+    // Tauri's NSIS flags: /P progress only, /R start the app again, /UPDATE install over this copy.
+    std::process::Command::new(&file).args(["/P", "/R", "/UPDATE"]).spawn().map_err(|e| e.to_string())?;
+    notch_core::log::line(format!("apps: update to {version} started"));
+    cx.app().exit(0);
+    Ok(())
 }
 
 impl Apps {
@@ -469,7 +507,44 @@ impl Feature for Apps {
                 st.cancel.store(true, SeqCst);
             }
             "search" => return search(inner, &text("q")),
-            "selfCheck" => return Ok(self_check(&version(cx)).unwrap_or_else(|e| json!({ "error": e }))),
+            // `auto`: the page's own timer; it only runs once the user said yes, and announces once a day.
+            "selfCheck" => {
+                let auto = args["auto"].as_bool() == Some(true);
+                if auto && cx.settings(ID)["selfCheck"].as_bool() != Some(true) {
+                    return Ok(json!({ "off": true }));
+                }
+                let mut v = match self_check(&version(cx)) {
+                    Ok(v) => v,
+                    Err(e) => return Ok(json!({ "error": e })),
+                };
+                let asset = v["asset"].take();
+                let newer = v["newer"] == true;
+                *inner.offer.lock().unwrap() = asset.as_object().filter(|_| newer).map(|a| Offer {
+                    url: a["url"].as_str().unwrap_or_default().into(),
+                    sha256: a["sha256"].as_str().unwrap_or_default().into(),
+                    version: v["latest"].as_str().unwrap_or_default().into(),
+                });
+                v["canInstall"] = (newer && asset.is_object()).into();
+                if auto {
+                    let path = cx.data_dir(ID).join("state.json");
+                    let mut saved: Saved = json_load(&path);
+                    let today = now() / 86400;
+                    v["announce"] = (newer && saved.update_day != today).into();
+                    if newer && saved.update_day != today {
+                        saved.update_day = today;
+                        let _ = json_save_atomic(&path, &saved);
+                    }
+                }
+                return Ok(v);
+            }
+            "selfUpdate" => {
+                let (cx, inner) = (cx.clone(), inner.clone());
+                std::thread::spawn(move || {
+                    if let Err(e) = self_update(&cx, &inner) {
+                        cx.emit(ID, "selfUpdate", json!({ "error": e }));
+                    }
+                });
+            }
             "about" => {
                 return Ok(json!({
                     "version": version(cx),

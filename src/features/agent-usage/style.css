@@ -26,3 +26,9 @@
 .f-agent-usage-limits { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
 .f-agent-usage-limits div { display: flex; flex-direction: column; gap: var(--s-1); font: 400 var(--t-xs) var(--font); color: var(--dim); }
 .f-agent-usage-note { margin: 0; font: 400 var(--t-xs) var(--font); color: var(--dim-2); }
+.f-agent-usage-pacing { display: flex; flex-direction: column; gap: var(--s-1); margin-top: var(--s-1); }
+.f-agent-usage-pacing small { font: 400 var(--t-xs) var(--font); color: var(--dim); font-variant-numeric: tabular-nums; }
+.f-agent-usage-pace { width: 100%; height: 36px; overflow: visible; }
+.f-agent-usage-pace polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.f-agent-usage-pace .ideal { stroke: var(--dim-2); stroke-dasharray: 3 3; }
+.f-agent-usage-pace .real { stroke: var(--accent); }

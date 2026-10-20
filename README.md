@@ -33,7 +33,7 @@ The name: a lintel is the beam across the top of a door or a window. Lintel sits
 
 It is made for Windows 10 and 11 first, and it holds to four values:
 
-- **Efficiency.** The core is Rust, with a light web view for the interface (Tauri 2). Hidden and idle, the optimised build used 0.49 % of one processor core over two minutes in the audit of this release.
+- **Efficiency.** The core is Rust, with a light web view for the interface (Tauri 2). Hidden and idle, the optimised build used 0.49 % of one processor core over two minutes in the audit of version 1.0.0.
 - **Optimisation.** A feature that is switched off loads nothing: no hooks, no timers, no threads, no windows. Where Windows offers an event, Lintel waits for the event and does not poll.
 - **Privacy.** No telemetry and no account. Network calls go only to what you turned on. Keys are kept in Windows Credential Manager. Nothing is approved, sent or deleted without your click.
 - **Necessity.** Every feature can be turned off. You keep what you use and switch off the rest.
@@ -54,24 +54,26 @@ It is made for Windows 10 and 11 first, and it holds to four values:
 
 ![A permission card on the island](docs/img/island-permission.png)
 
-- Shows the sessions of Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot CLI, OpenCode, Amp, Hermes, Antigravity and the Claude desktop app.
+- Shows the sessions of Claude Code, Codex, Gemini CLI, Cursor, GitHub Copilot CLI, OpenCode, Amp, Hermes, Antigravity, Kiro CLI, JetBrains terminals and the Claude desktop app. Claude Code works inside WSL and on SSH hosts too.
 - A permission request becomes a card with the command or the diff. You answer Allow, Always or Deny from the island. Lintel never answers a card by itself.
-- Questions from an agent, a live diff of its edits, and a card with the summary when it finishes.
+- Plan cards for Claude Code (Auto mode, Manual or Change plan), questions from an agent, a live diff of its edits, and a card with the summary when it finishes.
 
 ![The card an agent leaves when it has finished](docs/img/island-finished.png)
 
 - Jumps to the terminal or editor a session runs in.
-- Plan usage for Claude and Codex, local usage figures, and a weekly recap.
+- Plan usage for Claude (a card for each profile), Codex and OpenCode, local usage figures, a weekly pace line and a weekly recap.
+- Updates from the island: after you agree once, Lintel checks GitHub for new versions, and Update now installs one after checking its SHA-256. Nothing installs without your click.
 - Connecting an agent changes its settings file only after a dated backup, a diff on screen and your confirmation. If Lintel is closed, the agent carries on as if it were not installed.
 
 ### Chat
 
 - A chat with Anthropic, OpenAI, Google or OpenRouter models through your own key, with any OpenAI-compatible server, with a local model (Ollama, LM Studio), or through a command-line agent you already use.
 - Drop a file on the island to ask about it. Drag the mascot onto a window to attach it as context.
+- Formulas drawn as math, and tools from the MCP servers you already set up in other apps (each call asks first).
 
 ### Media
 
-- What is playing, from any player Windows knows: cover, title, seek bar and transport buttons.
+- What is playing, from any player Windows knows: cover, title, seek bar and transport buttons. When several browser tabs play media, you can switch between them.
 - Synced lyrics (off until you turn the lookup on), a visualiser, and a volume mixer per app.
 - Small level displays for volume, brightness and the microphone.
 
@@ -82,29 +84,31 @@ It is made for Windows 10 and 11 first, and it holds to four values:
 - System monitor: processor, memory, graphics, disks and network. Temperatures and fans come from an optional hardware helper.
 - Battery, clipboard history, a shelf for files, a scratchpad, a timer with Pomodoro and stopwatch.
 - Calendar from links you paste, reminders, weather.
-- Keep awake, display controls, quick toggles, window layout, input tools.
+- Keep awake, display controls, quick toggles, input tools.
+- Window layout: snap to halves, thirds and quarters, pin a window on top, drag a window from anywhere, and a strip of your named virtual desktops.
+- Notifications from other apps (WhatsApp, Telegram, Teams and more) shown as they pop up. Off by default; nothing leaves your PC.
 - A command bar and a radial menu.
-- App updates through winget, a cleaner and an uninstaller.
-- Read-only status from GitHub, Vercel, Stripe, n8n, Resend, Notion and Cal.com, each with your own key.
+- App updates through winget, a cleaner with a disk map and a duplicate finder, and an uninstaller.
+- Read-only status from GitHub (also GitLab and Gitea), Vercel, Stripe, n8n, Resend, Notion, Cal.com and Linear, each with your own key.
 - A desktop companion: the mascot can leave the island and sit on your desktop.
 
 ### Capture and recording
 
 ![The capture editor](docs/img/capture-editor.png)
 
-- Screenshots of an area or the whole screen, with an editor to mark them up.
+- Screenshots of an area or the whole screen, with an editor to mark them up: spotlight, magnifier, ruler, curved arrows and filled shapes.
 - Copies text and reads QR codes in a capture. A colour picker and a ruler for the screen.
 - Draw on the screen.
 - Screen recording of an area, a window or the whole screen.
 - Media tools to convert and resize pictures.
 
-### Voice (new, off by default)
+### Voice (off by default)
 
 - Hold a key and talk, or say "OK Lintel" if you turn the wake phrase on.
 - Commands such as "set a timer for five minutes" or "pause the music", and spoken answers to questions.
 - Speech recognition, the command model, the voice and the text model all run on your computer. An online model is an option you turn on with your own key.
 - Dictation: hold a key and your words are typed into the app in front.
-- Voice is new in this release and has had little testing. See [Known limits](#known-limits).
+- Voice has had little testing. See [Known limits](#known-limits).
 
 ### Settings
 
@@ -123,7 +127,7 @@ Every feature has a switch on the Features page, and a page of its own for its o
 2. Run it. It installs for your user only and does not ask for administrator rights.
 3. The installer is not code-signed, so Windows SmartScreen will warn. Choose "More info", then "Run anyway", if you trust the file you downloaded.
 
-With winget: `winget install lintel`. The package is in review at Microsoft, so this works once it has been accepted.
+Coming to winget: the package has been submitted and is waiting for Microsoft's moderators. Until it is accepted, use the installer above.
 
 To remove Lintel, use Settings, Apps in Windows. The uninstaller takes Lintel's entries out of your agents' settings and leaves your own data unless you tick the box to delete it.
 
@@ -190,8 +194,9 @@ Hardware sensors (temperatures and fans) need two more consents. The helper `lin
 - The voice assistant understands English only.
 - An answer from the local text model is slow on a laptop: 9 to 15 seconds before the first word, and about half a minute the first time after a start.
 - Voice was tested with recorded clips more than with live speech. The wake phrase "OK Lintel" has not been measured with many voices.
-- Mirroring the notifications of other apps is not available. Windows allows it only to a signed and packaged app.
-- The installer is not code-signed, so SmartScreen warns.
+- The installer is not code-signed, so SmartScreen warns. A Microsoft Store version is being prepared.
+- Updating from the island is new and has had little testing across real releases. The Linear pill has not been tried against a real account.
+- Claude Code in WSL needs a running distro, and on SSH hosts it needs python3 on the host.
 - The interface is translated into ten languages, but some newer lines are English only.
 - With "The small island stays" on and the mascot shown, the resting island uses about 10 % of one processor core. With the mascot hidden it is about 1 %.
 - The island lives on one display at a time.
@@ -201,12 +206,9 @@ Hardware sensors (temperatures and fans) need two more consents. The helper `lin
 
 ## Code signing policy
 
-Releases are not code-signed yet. Lintel is applying to the SignPath Foundation's free code signing for open-source projects. Once it is granted, release installers will be signed on these terms:
+Lintel's releases are not code-signed. The SignPath Foundation, which signs open-source projects for free, reviewed Lintel's application in October 2026 and declined it for now, because the project is still young: it looks for public signals such as stars, forks, contributors and outside mentions. Lintel may apply again later. A Microsoft Store version is being prepared; the Store signs the apps it distributes, so that version will be signed by Microsoft.
 
-- Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
-- Every signed installer is built from this repository by the [build workflow](.github/workflows/build.yml) on GitHub's own runners, never on a private machine.
-- Committers and reviewers: [the repository's contributors](https://github.com/shakibbinkabir/lintel/graphs/contributors).
-- Approvers: [the repository's owner](https://github.com/shakibbinkabir).
+Until then, every release is built on GitHub's own runner from the tagged source by the public release workflow, and the release page lists the installer's SHA-256. Anyone can also build it from source. SmartScreen warns on an unsigned installer: choose "More info", then "Run anyway", if you trust the download.
 
 Privacy policy: this program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it. [docs/PRIVACY.md](docs/PRIVACY.md) lists every address Lintel can call and what turns each one on.
 

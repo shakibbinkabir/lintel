@@ -1533,6 +1533,42 @@
       "id": {
         "other": "{count} hari"
       }
+    },
+    "Copied": {
+      "en": "Copied"
+    },
+    "Clean link": {
+      "en": "Clean link"
+    },
+    "Link copied, clean": {
+      "en": "Link copied, clean"
+    },
+    "Nothing to clean": {
+      "en": "Nothing to clean"
+    },
+    "Not a link": {
+      "en": "Not a link"
+    },
+    "Change case": {
+      "en": "Change case"
+    },
+    "Keep on the shelf": {
+      "en": "Keep on the shelf"
+    },
+    "Kept": {
+      "en": "Kept"
+    },
+    "The shelf is off": {
+      "en": "The shelf is off"
+    },
+    "Selected text": {
+      "en": "Selected text"
+    },
+    "Show a bar beside selected text": {
+      "en": "Show a bar beside selected text"
+    },
+    "After you select text in another app, a small bar offers to copy it, clean a link, change its case or keep it on the shelf. Nothing is read in password fields, and nothing happens until you click.": {
+      "en": "After you select text in another app, a small bar offers to copy it, clean a link, change its case or keep it on the shelf. Nothing is read in password fields, and nothing happens until you click."
     }
   }
 }

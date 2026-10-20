@@ -14,17 +14,22 @@ import type { FeatureCtx } from "../../core/feature";
 import { icon } from "../../ui/icons";
 import { h } from "../../views/dom";
 
-export type Shape = "arrow" | "line" | "rect" | "ellipse" | "pen" | "highlight" | "text" | "blur";
+export type Shape = "arrow" | "curve" | "line" | "ruler" | "rect" | "ellipse" | "pen" | "highlight" | "text" | "blur" | "spot" | "magnify";
 export type Tool = Shape | "select" | "crop" | "eraser";
 
 export interface Mark {
-  tool: Shape;
+  /** "image" is a pasted picture: it has no tool in hand, it is placed and moved. */
+  tool: Shape | "image";
   color: string;
   /** Line width in pixels of the document; a text's size follows from it. */
   size: number;
   /** x, y pairs: two ends, two corners, a text's top-left corner, or a path. */
   pts: number[];
   text?: string;
+  /** A rectangle or an ellipse filled as well as outlined. */
+  fill?: boolean;
+  /** The pasted picture of an "image", in the box of `pts`. */
+  img?: ImageBitmap;
 }
 
 export interface Box {
@@ -52,6 +57,11 @@ export const ICONS = {
   highlight: "M14.5 4l5.5 5.5-8 8H7.5l-1.5-1.5v-4zM4.5 20.5h15",
   text: "M5 7V5h14v2M12 5v14M9.5 19h5",
   blur: "M4 4h5.3v5.3H4zM14.7 4H20v5.3h-5.3zM9.3 9.3h5.4v5.4H9.3zM4 14.7h5.3V20H4zM14.7 14.7H20V20h-5.3z",
+  curve: "M5 19C6 8 14 5 19 5M13.5 4.5L19 5l-1 5.5",
+  spot: "M3.5 3.5h17v17h-17zM8.5 8.5h7v7h-7z",
+  ruler: "M3.5 8h17v8h-17zM7 8v3.5M10.5 8v2.5M14 8v3.5M17.5 8v2.5",
+  magnify: "M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zM15.5 15.5L20 20",
+  fill: "M5 6h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z",
   crop: "M7 3.5V17h13.5M3.5 7H17v13.5",
   eraser: "M9 19.5l-4.5-4.5a1.4 1.4 0 0 1 0-2l8-8a1.4 1.4 0 0 1 2 0l5 5a1.4 1.4 0 0 1 0 2L12 19.5zM9 9l6 6M5 19.5h15",
   undo: "M9 14.5L4.5 10 9 5.5M4.5 10H14a5 5 0 0 1 0 10h-3",
@@ -76,6 +86,10 @@ const TOOL: Record<Tool, [title: string, key: string]> = {
   blur: ["Blur", "B"],
   crop: ["Crop", "C"],
   eraser: ["Eraser", "E"],
+  curve: ["Curved arrow", "D"],
+  ruler: ["Ruler", "U"],
+  spot: ["Spotlight", "S"],
+  magnify: ["Magnifier", "M"],
 };
 
 const tokens = new Map<string, string>();
@@ -170,6 +184,52 @@ function mosaic(c: Ctx, m: Mark, base: Base) {
   c.drawImage(tile, b.x, b.y, tile.width * block, tile.height * block);
 }
 
+/** The control point that bends a curved arrow to one side of its chord. */
+function bend(p: number[]): [number, number] {
+  return [(p[0] + p[2]) / 2 - (p[3] - p[1]) * 0.25, (p[1] + p[3]) / 2 + (p[2] - p[0]) * 0.25];
+}
+
+/** A round window on the picture, twice as large. */
+function magnify(c: Ctx, m: Mark, base: Base) {
+  const [cx, cy] = [(m.pts[0] + m.pts[2]) / 2, (m.pts[1] + m.pts[3]) / 2];
+  const [rx, ry] = [Math.abs(m.pts[2] - m.pts[0]) / 2, Math.abs(m.pts[3] - m.pts[1]) / 2];
+  if (rx < 1 || ry < 1) return;
+  c.save();
+  c.beginPath();
+  c.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  c.clip();
+  c.drawImage(base, -cx, -cy, base.width * 2, base.height * 2);
+  c.restore();
+  c.beginPath();
+  c.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  c.stroke();
+}
+
+/** A measured line: ticks at both ends and its length in pixels of the picture. */
+function measure(c: Ctx, m: Mark) {
+  const [x0, y0, x1, y1] = m.pts;
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  const a = Math.atan2(y1 - y0, x1 - x0) + Math.PI / 2;
+  const tick = 5 + m.size * 1.5;
+  c.beginPath();
+  c.moveTo(x0, y0);
+  c.lineTo(x1, y1);
+  for (const [x, y] of [[x0, y0], [x1, y1]]) {
+    c.moveTo(x + Math.cos(a) * tick, y + Math.sin(a) * tick);
+    c.lineTo(x - Math.cos(a) * tick, y - Math.sin(a) * tick);
+  }
+  c.stroke();
+  if (len < 2) return;
+  c.font = fontOf(10 + m.size * 2);
+  c.textAlign = "center";
+  c.textBaseline = "bottom";
+  c.lineWidth = 4;
+  c.strokeStyle = token("--bg");
+  const [mx, my] = [(x0 + x1) / 2, (y0 + y1) / 2 - tick - 2];
+  c.strokeText(`${Math.round(len)} px`, mx, my);
+  c.fillText(`${Math.round(len)} px`, mx, my);
+}
+
 /** Paints one mark. `base` is the picture under it: none on the screen. */
 export function drawMark(c: Ctx, m: Mark, base?: Base | null) {
   const p = m.pts;
@@ -179,11 +239,41 @@ export function drawMark(c: Ctx, m: Mark, base?: Base | null) {
   c.strokeStyle = c.fillStyle = m.color;
   if (m.tool === "rect") {
     c.lineJoin = "miter";
-    c.strokeRect(Math.min(p[0], p[2]), Math.min(p[1], p[3]), Math.abs(p[2] - p[0]), Math.abs(p[3] - p[1]));
+    const [x, y, w, h] = [Math.min(p[0], p[2]), Math.min(p[1], p[3]), Math.abs(p[2] - p[0]), Math.abs(p[3] - p[1])];
+    if (m.fill) {
+      c.globalAlpha = 0.3;
+      c.fillRect(x, y, w, h);
+      c.globalAlpha = 1;
+    }
+    c.strokeRect(x, y, w, h);
   } else if (m.tool === "ellipse") {
     c.beginPath();
     c.ellipse((p[0] + p[2]) / 2, (p[1] + p[3]) / 2, Math.abs(p[2] - p[0]) / 2, Math.abs(p[3] - p[1]) / 2, 0, 0, Math.PI * 2);
+    if (m.fill) {
+      c.globalAlpha = 0.3;
+      c.fill();
+      c.globalAlpha = 1;
+    }
     c.stroke();
+  } else if (m.tool === "image") {
+    if (m.img) c.drawImage(m.img, Math.min(p[0], p[2]), Math.min(p[1], p[3]), Math.abs(p[2] - p[0]), Math.abs(p[3] - p[1]));
+  } else if (m.tool === "magnify") {
+    if (base) magnify(c, m, base);
+  } else if (m.tool === "ruler") {
+    measure(c, m);
+  } else if (m.tool === "curve") {
+    const [c1x, c1y] = bend(p);
+    const head = Math.min(Math.max(10, m.size * 3.4), Math.hypot(p[2] - p[0], p[3] - p[1]) * 0.5) * 1.4;
+    const a = Math.atan2(p[3] - c1y, p[2] - c1x);
+    // The shaft stops inside the head; the head is the arrow's own.
+    c.beginPath();
+    c.moveTo(p[0], p[1]);
+    c.quadraticCurveTo(c1x, c1y, p[2] - Math.cos(a) * head * 0.6, p[3] - Math.sin(a) * head * 0.6);
+    c.stroke();
+    arrowPath(c, [p[2] - Math.cos(a) * head, p[3] - Math.sin(a) * head, p[2], p[3]], m.size);
+    c.fill();
+  } else if (m.tool === "spot") {
+    // The dimming is the board's: one for all the spotlights.
   } else if (m.tool === "arrow") {
     arrowPath(c, p, m.size);
     c.fill();
@@ -248,7 +338,7 @@ function near(p: number[], x: number, y: number, reach: number): boolean {
 /** A click at (x, y) means this mark: on its line, or inside a text or a blur. */
 export function hit(m: Mark, x: number, y: number, reach: number): boolean {
   const p = m.pts;
-  if (m.tool === "text" || m.tool === "blur") {
+  if (m.tool === "text" || m.tool === "blur" || m.tool === "spot" || m.tool === "magnify" || m.tool === "image") {
     const b = bounds(m);
     return x >= b.x - reach && y >= b.y - reach && x <= b.x + b.w + reach && y <= b.y + b.h + reach;
   }
@@ -257,6 +347,14 @@ export function hit(m: Mark, x: number, y: number, reach: number): boolean {
     const [rx, ry] = [Math.abs(p[2] - p[0]) / 2 || 1, Math.abs(p[3] - p[1]) / 2 || 1];
     const d = Math.hypot((x - (p[0] + p[2]) / 2) / rx, (y - (p[1] + p[3]) / 2) / ry);
     return Math.abs(d - 1) * Math.min(rx, ry) <= reach + m.size / 2;
+  }
+  if (m.tool === "curve") {
+    const [c1x, c1y] = bend(p);
+    const path = Array.from({ length: 13 }, (_, i) => {
+      const u = i / 12;
+      return [(1 - u) ** 2 * p[0] + 2 * u * (1 - u) * c1x + u * u * p[2], (1 - u) ** 2 * p[1] + 2 * u * (1 - u) * c1y + u * u * p[3]];
+    }).flat();
+    return near(path, x, y, reach + m.size / 2);
   }
   return near(p, x, y, reach + (m.tool === "highlight" ? markerPx(m.size) : m.size) / 2);
 }
@@ -268,7 +366,7 @@ interface Snap {
   crop: Box | null;
 }
 
-const freehand = (tool: Tool) => tool === "pen" || tool === "highlight";
+const freehand = (tool: Tool | "image") => tool === "pen" || tool === "highlight";
 
 /**
  * The marks of one document and the gestures that make them. The page turns
@@ -282,6 +380,8 @@ export class Board {
   tool: Tool = "arrow";
   color = "";
   size = 4;
+  /** New rectangles and ellipses are filled. */
+  fill = false;
   /** The mark being drawn. */
   draft: Mark | null = null;
   /** The mark the select tool holds, by its place in `marks`. */
@@ -330,7 +430,7 @@ export class Board {
   }
 
   /** A new colour or size for the selected mark. */
-  restyle(patch: Partial<Pick<Mark, "color" | "size">>) {
+  restyle(patch: Partial<Pick<Mark, "color" | "size" | "fill">>) {
     if (this.marks[this.selected]) this.set(this.marks.map((m, i) => (i === this.selected ? { ...m, ...patch } : m)));
   }
 
@@ -345,7 +445,7 @@ export class Board {
     if (gone >= 0) this.marks = this.marks.filter((_, i) => i !== gone);
   }
 
-  private place = (v: number) => (this.tool === "blur" ? Math.round(v) : snap(v, this.size));
+  private place = (v: number) => (this.tool === "blur" || this.tool === "spot" || this.tool === "magnify" ? Math.round(v) : snap(v, this.size));
 
   /** The pointer went down at a pixel of the document; `reach` is how near a mark counts as on it. */
   down(x: number, y: number, reach: number) {
@@ -354,7 +454,7 @@ export class Board {
     if (tool === "select") this.selected = this.at(x, y, reach);
     else if (tool === "eraser") this.erase(x, y, reach);
     else if (tool === "pen" || tool === "highlight") this.draft = { tool, color, size, pts: [x, y] };
-    else if (tool !== "text" && tool !== "crop") this.draft = { tool, color, size, pts: [this.place(x), this.place(y), this.place(x), this.place(y)] };
+    else if (tool !== "text" && tool !== "crop") this.draft = { tool, color, size, fill: this.fill && (tool === "rect" || tool === "ellipse"), pts: [this.place(x), this.place(y), this.place(x), this.place(y)] };
     this.changed();
   }
 
@@ -393,8 +493,22 @@ export class Board {
 
   /** Every mark, and the one being drawn. */
   paint(c: Ctx, base?: Base | null) {
-    for (const m of this.marks) drawMark(c, m, base);
-    if (this.draft) drawMark(c, this.draft, base);
+    const all = this.draft ? [...this.marks, this.draft] : this.marks;
+    const spots = all.filter((m) => m.tool === "spot");
+    if (spots.length && base) {
+      // Everything is dimmed except the spotlights. debt: two overlapping spotlights dim where they overlap.
+      c.save();
+      c.fillStyle = "rgba(0,0,0,0.6)";
+      c.beginPath();
+      c.rect(0, 0, base.width, base.height);
+      for (const s of spots) {
+        const b = bounds(s);
+        c.rect(b.x, b.y, b.w, b.h);
+      }
+      c.fill("evenodd");
+      c.restore();
+    }
+    for (const m of all) drawMark(c, m, base);
   }
 
   /** A frame around the selected mark, one pixel of the display wide at this `scale`. */
@@ -402,7 +516,7 @@ export class Board {
     const m = this.marks[this.selected];
     if (!m) return;
     const b = bounds(m);
-    const pad = (m.tool === "text" || m.tool === "blur" ? 0 : (m.tool === "highlight" ? markerPx(m.size) : m.size) / 2) + 4 / scale;
+    const pad = (m.tool === "text" || m.tool === "blur" || m.tool === "spot" || m.tool === "magnify" || m.tool === "image" ? 0 : (m.tool === "highlight" ? markerPx(m.size) : m.size) / 2) + 4 / scale;
     c.save();
     c.strokeStyle = token("--accent");
     c.lineWidth = 1 / scale;

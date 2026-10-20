@@ -19,7 +19,16 @@ use crate::{i18n, island, log, platform, Shared};
 /// WebView2 allows exactly one browser environment per app, and its options are
 /// fixed by whichever webview is created first. Every window therefore asks for
 /// the *same* arguments as the island (`additionalBrowserArgs` in tauri.conf.json).
-const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --autoplay-policy=no-user-gesture-required";
+
+/// With native occlusion tracking off (so the island stays painted after the
+/// display turns off or the PC locks), WebView2 no longer learns that a hidden
+/// window is hidden: tell it, so a hidden window draws no frames.
+fn web_visible(win: &WebviewWindow, on: bool) {
+    let _ = win.with_webview(move |webview| unsafe {
+        let _ = webview.controller().SetIsVisible(on);
+    });
+}
 
 /// The page behind a window before its own CSS paints: never a white flash.
 const BACKDROP: Color = Color(11, 12, 14, 255);
@@ -145,6 +154,7 @@ pub fn create_settings(app: &AppHandle) {
                     api.prevent_close();
                     platform::settings_closing(&hidden);
                     let _ = hidden.hide();
+                    web_visible(&hidden, false);
                 }
             });
         }
@@ -154,10 +164,20 @@ pub fn create_settings(app: &AppHandle) {
 
 pub fn show_settings(app: &AppHandle) {
     let Some(win) = app.get_webview_window(SETTINGS) else {
-        log::line("settings window missing");
+        // It failed to build at launch (WebView2 error): build it again, from
+        // async code, never from the command or menu callback that asked.
+        log::line("settings window missing: creating it");
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            create_settings(&app);
+            if app.get_webview_window(SETTINGS).is_some() {
+                show_settings(&app);
+            }
+        });
         return;
     };
     platform::settings_opening(&win);
+    web_visible(&win, true);
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();

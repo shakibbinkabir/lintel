@@ -3,7 +3,7 @@
 //! `normalize_tool_fields` in the Mac relay (HookServer.swift), plus Cursor's
 //! events.
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// The canonical name of an agent's event. Unknown names pass through.
 pub fn event(name: &str) -> &str {
@@ -39,6 +39,9 @@ pub fn event(name: &str) -> &str {
         "postToolUseFailure" => "PostToolUseFailure",
         "subagentStart" => "SubagentStart",
         "subagentStop" => "SubagentStop",
+        // Kiro CLI
+        "agentSpawn" => "SessionStart",
+        // Kept as they are for `for_agent`: Cursor's beforeShellExecution, afterFileEdit.
         other => other,
     }
 }
@@ -50,6 +53,9 @@ const ARG_ALIASES: &[(&str, &str)] = &[
     ("Path", "path"),
     ("Url", "url"),
     ("Query", "query"),
+    ("TargetFile", "file_path"),
+    ("AbsolutePath", "file_path"),
+    ("DirectoryPath", "path"),
     ("Pattern", "pattern"),
 ];
 
@@ -128,6 +134,48 @@ pub fn refine(event: &str, map: &Map<String, Value>) -> String {
         return "StopFailure".into();
     }
     event.to_string()
+}
+
+/// Kiro CLI's shell tools.
+const KIRO_SHELL_TOOLS: &[&str] = &["execute_bash", "shell"];
+/// Antigravity's tools that run a command or change a file: the ones that get a card.
+/// Everything else (reads, searches, MCP calls) stays with its own prompt.
+const ANTIGRAVITY_ASKS: &[&str] = &["run_command", "write_to_file", "replace_file_content", "multi_replace_file_content"];
+
+/// What `agent`'s event means to the island, once its fields are filled.
+///
+/// * Cursor: `beforeShellExecution` waits for Allow or Deny; `afterFileEdit` is a
+///   finished MultiEdit, so the live diff can show it.
+/// * Kiro: a shell command's PreToolUse is the one that waits for a click; its
+///   final answer is `assistant_response`.
+/// * Antigravity: the PreToolUse of a command or a file write waits for a click.
+pub fn for_agent(agent: &str, event: String, map: &mut Map<String, Value>) -> String {
+    let tool = map.get("tool_name").and_then(Value::as_str).unwrap_or("").to_string();
+    match (agent, event.as_str()) {
+        ("cursor", "beforeShellExecution") => {
+            let command = map.get("command").cloned().unwrap_or(Value::Null);
+            map.insert("tool_name".into(), json!("Shell"));
+            map.insert("tool_input".into(), json!({ "command": command }));
+            "PermissionRequest".into()
+        }
+        ("cursor", "afterFileEdit") => {
+            let path = map.get("file_path").cloned().unwrap_or(Value::Null);
+            let edits = map.get("edits").cloned().unwrap_or(json!([]));
+            map.insert("tool_name".into(), json!("MultiEdit"));
+            map.insert("tool_input".into(), json!({ "file_path": path, "edits": edits }));
+            "PostToolUse".into()
+        }
+        ("kiro", _) => {
+            if !map.contains_key("last_assistant_message") {
+                if let Some(text) = map.get("assistant_response").cloned() {
+                    map.insert("last_assistant_message".into(), text);
+                }
+            }
+            if event == "PreToolUse" && KIRO_SHELL_TOOLS.contains(&tool.as_str()) { "PermissionRequest".into() } else { event }
+        }
+        ("antigravity", "PreToolUse") if ANTIGRAVITY_ASKS.contains(&tool.as_str()) => "PermissionRequest".into(),
+        _ => event,
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +302,42 @@ mod tests {
         assert!(!m.contains_key("tool_name"));
         assert!(!m.contains_key("tool_input"));
         assert!(!m.contains_key("cwd"));
+    }
+
+    #[test]
+    fn cursors_shell_and_edits_become_permission_and_diff() {
+        let mut m = obj(json!({ "command": "npm test" }));
+        assert_eq!(for_agent("cursor", "beforeShellExecution".into(), &mut m), "PermissionRequest");
+        assert_eq!((m["tool_name"].as_str(), m["tool_input"]["command"].as_str()), (Some("Shell"), Some("npm test")));
+        let mut m = obj(json!({ "file_path": "a.ts", "edits": [{ "old_string": "a", "new_string": "b" }] }));
+        assert_eq!(for_agent("cursor", "afterFileEdit".into(), &mut m), "PostToolUse");
+        assert_eq!(m["tool_name"], "MultiEdit");
+        assert_eq!(m["tool_input"]["edits"][0]["new_string"], "b");
+        // Another agent, or an ordinary Cursor event, is left alone.
+        assert_eq!(for_agent("", "beforeShellExecution".into(), &mut m), "beforeShellExecution");
+        assert_eq!(for_agent("cursor", "PreToolUse".into(), &mut m), "PreToolUse");
+    }
+
+    #[test]
+    fn only_kiros_shell_commands_wait_and_its_answer_is_read() {
+        let mut m = obj(json!({ "tool_name": "execute_bash", "assistant_response": "Done." }));
+        assert_eq!(for_agent("kiro", "PreToolUse".into(), &mut m), "PermissionRequest");
+        assert_eq!(m["last_assistant_message"], "Done.");
+        let mut m = obj(json!({ "tool_name": "fs_read" }));
+        assert_eq!(for_agent("kiro", "PreToolUse".into(), &mut m), "PreToolUse");
+        let mut m = obj(json!({ "tool_name": "execute_bash" }));
+        assert_eq!(for_agent("cursor", "PreToolUse".into(), &mut m), "PreToolUse");
+    }
+
+    #[test]
+    fn antigravity_asks_for_commands_and_writes_only() {
+        for (tool, asks) in [("run_command", true), ("write_to_file", true), ("view_file", false), ("call_mcp_tool", false)] {
+            let mut m = obj(json!({ "tool_name": tool }));
+            let want = if asks { "PermissionRequest" } else { "PreToolUse" };
+            assert_eq!(for_agent("antigravity", "PreToolUse".into(), &mut m), want, "{tool}");
+        }
+        let mut m = obj(json!({ "tool_name": "run_command" }));
+        assert_eq!(for_agent("antigravity", "PostToolUse".into(), &mut m), "PostToolUse");
     }
 
     #[test]

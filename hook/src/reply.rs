@@ -8,11 +8,29 @@
 
 use serde_json::{json, Map, Value};
 
+/// Claude Code under another name: `--agent claude-<something>` gives a second
+/// Claude profile its own pill and keeps Claude Code's stdout contract (decisions
+/// and answered questions included). `claude-desktop` is not one: that tag marks
+/// sessions of the Claude desktop app, which has its own prompts and stays silent.
+/// (After upstream pull request 607.)
+pub fn is_claude_code(agent: &str) -> bool {
+    agent.is_empty() || (agent.starts_with("claude-") && agent != "claude-desktop")
+}
+
 /// The agents whose permission requests the island can answer: Claude Code
-/// (no `--agent`), Codex, Copilot CLI and Muse Code. Any decision for another
-/// agent is ignored here too, whatever the app sent.
+/// (no `--agent`, or a `claude-*` alias), Codex, Copilot CLI, Muse Code, Cursor
+/// Agent, Kiro CLI, Antigravity and OpenCode. Any decision for another agent is
+/// ignored here too, whatever the app sent.
 pub fn takes_decisions(agent: &str) -> bool {
-    matches!(agent, "" | "codex" | "copilot" | "muse")
+    is_claude_code(agent) || matches!(agent, "codex" | "copilot" | "muse" | "cursor" | "kiro" | "antigravity" | "opencode")
+}
+
+/// What goes to stderr, and the exit code, when the answer is not on stdout:
+/// Kiro CLI blocks a tool when its PreToolUse hook exits with 2 and tells the
+/// model what stderr says. Anything else, a missing decision included, exits 0.
+pub fn exit_status(agent: &str, event: &str, decision: Option<&str>) -> Option<(String, i32)> {
+    let denied = decision.map(str::trim) == Some("deny");
+    (agent == "kiro" && event == "PermissionRequest" && denied).then(|| (format!("Denied from {}", notch_brand::NAME), 2))
 }
 
 /// Agents that read a JSON object on stdout after every hook and get `{}` —
@@ -49,9 +67,31 @@ pub fn stdout(agent: &str, event: &str, decision: Option<&str>, question: Option
                 None => None,
             }
         }
-        // Claude Code and Codex share the documented hookSpecificOutput. Only
-        // Claude Code asks questions.
-        "" => decision.and_then(|d| decision_json(d, question)),
+        // Cursor reads a flat `permission`.
+        "cursor" => match decision.map(str::trim) {
+            Some("allow" | "always") => Some(r#"{"permission":"allow"}"#.to_string()),
+            Some("deny") => Some(
+                json!({
+                    "permission": "deny",
+                    "user_message": format!("Denied from {}", notch_brand::NAME),
+                    "agent_message": format!("The user denied this command from {}.", notch_brand::NAME),
+                })
+                .to_string(),
+            ),
+            _ => None,
+        },
+        // Kiro reads its answer from the exit code (`exit_status`).
+        "kiro" => None,
+        // Antigravity gates a tool on PreToolUse: no click is "ask", which leaves it
+        // to its own prompt. (The exact grants for an allow are added by `stdout_with`.)
+        "antigravity" => match decision.map(str::trim) {
+            Some("allow" | "always") => Some(r#"{"decision":"allow"}"#.to_string()),
+            Some("deny") => Some(json!({ "decision": "deny", "reason": format!("Denied from {}", notch_brand::NAME) }).to_string()),
+            _ => Some(r#"{"decision":"ask"}"#.to_string()),
+        },
+        // Claude Code (under any of its names), Codex and OpenCode share the
+        // documented hookSpecificOutput. Claude Code and OpenCode ask questions.
+        a if is_claude_code(a) || a == "opencode" => decision.and_then(|d| decision_json(d, question)),
         _ => decision.and_then(|d| decision_json(d, None)),
     }
 }
@@ -59,6 +99,8 @@ pub fn stdout(agent: &str, event: &str, decision: Option<&str>, question: Option
 /// `stdout`, plus Claude Code's "Always": the decision "always" echoes the
 /// request's own `permission_suggestions` as `updatedPermissions`, so Claude Code
 /// remembers the rule. No suggestion (or another agent) means a plain allow.
+/// For Antigravity `suggestions` is the tool call (`{"name", "args"}`) instead,
+/// and an allow carries the exact grant for that one command or file.
 pub fn stdout_with(
     agent: &str,
     event: &str,
@@ -66,7 +108,13 @@ pub fn stdout_with(
     question: Option<&Value>,
     suggestions: Option<&Value>,
 ) -> Option<String> {
-    if agent.is_empty() && event == "PermissionRequest" && decision == Some("always") {
+    if agent == "antigravity" && event == "PermissionRequest" && matches!(decision.map(str::trim), Some("allow" | "always")) {
+        let grants = antigravity_grants(suggestions);
+        if !grants.is_empty() {
+            return Some(json!({ "decision": "allow", "permissionOverrides": grants }).to_string());
+        }
+    }
+    if is_claude_code(agent) && event == "PermissionRequest" && decision == Some("always") {
         if let Some(list) = suggestions.and_then(Value::as_array).filter(|l| !l.is_empty()) {
             return Some(
                 json!({
@@ -80,6 +128,27 @@ pub fn stdout_with(
         }
     }
     stdout(agent, event, decision, question)
+}
+
+/// The exact grants for one Antigravity tool call, in the forms its permission
+/// rules read: the command line as typed, or the one file being written. No
+/// wildcard and no binary name: allowing `git status` once never allows `git`.
+fn antigravity_grants(call: Option<&Value>) -> Vec<String> {
+    let name = call.and_then(|c| c.get("name")).and_then(Value::as_str).unwrap_or_default();
+    let args = call.and_then(|c| c.get("args")).and_then(Value::as_object);
+    let text = |keys: &[&str]| keys.iter().find_map(|k| args?.get(*k)?.as_str()).map(str::trim).filter(|s| !s.is_empty());
+    let mut list = Vec::new();
+    if name == "run_command" {
+        if let Some(cmd) = text(&["CommandLine", "command"]) {
+            list.push(format!("command({cmd})"));
+            list.push(format!("run_command({cmd})"));
+        }
+    } else if matches!(name, "write_to_file" | "replace_file_content" | "multi_replace_file_content") {
+        if let Some(file) = text(&["TargetFile", "file_path"]) {
+            list.push(format!("{name}({file})"));
+        }
+    }
+    list
 }
 
 /// The documented PermissionRequest output. Anything we do not recognise prints
@@ -128,6 +197,34 @@ pub fn decision_json(decision: &str, question: Option<&Value>) -> Option<String>
     ))
 }
 
+/// Claude Code's ExitPlanMode, answered on the plan card (after upstream pull
+/// request 703). Claude Code ignores an allow for it that does not carry the
+/// plan back as `updatedInput`. Auto mode and Manual are the terminal's own
+/// "yes, and…" choices, a `setMode` for the session; Change plan is its "tell
+/// Claude what to change": a deny that stops the turn, so the user types the
+/// change in the terminal. Anything else prints nothing.
+pub fn plan_json(decision: &str, plan: &Value) -> Option<String> {
+    let mut d = match decision.trim() {
+        "allow" | "always" | "plan_auto" | "plan_manual" => json!({ "behavior": "allow", "updatedInput": plan }),
+        "plan_change" => json!({
+            "behavior": "deny",
+            "interrupt": true,
+            "message": "The user wants to change the plan and will say how in the terminal.",
+        }),
+        "deny" => return decision_json("deny", None),
+        _ => return None,
+    };
+    let mode = match decision.trim() {
+        "plan_auto" => "auto",
+        "plan_manual" => "default",
+        _ => "",
+    };
+    if !mode.is_empty() {
+        d["updatedPermissions"] = json!([{ "type": "setMode", "mode": mode, "destination": "session" }]);
+    }
+    Some(json!({ "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": d } }).to_string())
+}
+
 /// True when `answers` answers exactly the questions Claude Code asked: one entry
 /// per question, keyed by its text; a single-select answer is one of its option
 /// labels (a string), a multi-select answer a non-empty list of distinct labels
@@ -171,7 +268,7 @@ mod tests {
 
     const AGENTS: &[&str] = &[
         "", "gemini", "antigravity", "cursor", "codex", "copilot", "muse", "opencode", "amp",
-        "hermes", "claude-desktop", "my-tool",
+        "hermes", "claude-desktop", "kiro", "claude-perso", "my-tool",
     ];
     const EVENTS: &[&str] = &[
         "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
@@ -215,7 +312,9 @@ mod tests {
                 }
             }
             let out = stdout(agent, "PermissionRequest", Some("allow"), None);
-            assert_eq!(out.as_deref().is_some_and(allows), takes_decisions(agent), "{agent:?}: {out:?}");
+            // Kiro answers through its exit code, never on stdout.
+            let on_stdout = takes_decisions(agent) && *agent != "kiro";
+            assert_eq!(out.as_deref().is_some_and(allows), on_stdout, "{agent:?}: {out:?}");
         }
     }
 
@@ -248,12 +347,60 @@ mod tests {
         for event in ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"] {
             assert_eq!(stdout("gemini", event, None, None).unwrap(), "{}");
         }
-        // Cursor: silence, which Cursor reads as "carry on as usual".
+        // Cursor: silence, which Cursor reads as "carry on as usual", and a flat
+        // `permission` once a shell command was answered.
         for event in ["PreToolUse", "UserPromptSubmit", "Stop"] {
             assert_eq!(stdout("cursor", event, None, None), None);
         }
+        assert_eq!(stdout("cursor", "PermissionRequest", Some("allow"), None).unwrap(), r#"{"permission":"allow"}"#);
+        assert!(stdout("cursor", "PermissionRequest", Some("deny"), None).unwrap().contains(r#""permission":"deny""#));
+        assert_eq!(stdout("cursor", "PermissionRequest", None, None), None);
+        // Antigravity: no click is "ask", its own prompt.
+        assert_eq!(stdout("antigravity", "PermissionRequest", None, None).unwrap(), r#"{"decision":"ask"}"#);
+        assert_eq!(stdout("antigravity", "PermissionRequest", Some("deny"), None).unwrap(), r#"{"decision":"deny","reason":"Denied from Lintel"}"#);
+        // OpenCode is not fail-closed: silence, and its plugin asks in its own prompt.
+        assert_eq!(stdout("opencode", "PermissionRequest", None, None), None);
+        assert_eq!(stdout("opencode", "PermissionRequest", Some("allow"), None).unwrap(), allow);
         // Hermes approvals are not supported: its decisions are never relayed.
         assert_eq!(stdout("hermes", "PermissionRequest", Some("allow"), None), None);
+    }
+
+    #[test]
+    fn kiro_is_only_ever_blocked_by_a_deny() {
+        assert_eq!(exit_status("kiro", "PermissionRequest", Some("deny")), Some(("Denied from Lintel".into(), 2)));
+        for decision in [None, Some("allow"), Some("always"), Some(""), Some("maybe")] {
+            assert_eq!(exit_status("kiro", "PermissionRequest", decision), None, "{decision:?}");
+        }
+        assert_eq!(exit_status("kiro", "PreToolUse", Some("deny")), None);
+        for agent in AGENTS.iter().filter(|a| **a != "kiro") {
+            assert_eq!(exit_status(agent, "PermissionRequest", Some("deny")), None, "{agent:?}");
+        }
+    }
+
+    #[test]
+    fn antigravity_is_allowed_for_that_one_command_only() {
+        let call = json!({ "name": "run_command", "args": { "CommandLine": "git status" } });
+        let out = stdout_with("antigravity", "PermissionRequest", Some("allow"), None, Some(&call)).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["decision"], "allow");
+        assert_eq!(v["permissionOverrides"], json!(["command(git status)", "run_command(git status)"]));
+        let write = json!({ "name": "write_to_file", "args": { "TargetFile": "C:/p/a.rs" } });
+        let out = stdout_with("antigravity", "PermissionRequest", Some("allow"), None, Some(&write)).unwrap();
+        assert!(out.contains("write_to_file(C:/p/a.rs)") && !out.contains('*'), "{out}");
+        // No click: no grant.
+        let out = stdout_with("antigravity", "PermissionRequest", None, None, Some(&call)).unwrap();
+        assert_eq!(out, r#"{"decision":"ask"}"#);
+    }
+
+    #[test]
+    fn a_claude_alias_is_claude_code_with_its_own_pill() {
+        assert!(is_claude_code("") && is_claude_code("claude-perso"));
+        assert!(!is_claude_code("claude-desktop") && !is_claude_code("codex"));
+        assert!(takes_decisions("claude-perso") && !takes_decisions("claude-desktop"));
+        let allow = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#;
+        assert_eq!(stdout("claude-perso", "PermissionRequest", Some("allow"), None).unwrap(), allow);
+        assert_eq!(stdout("claude-perso", "PermissionRequest", None, None), None);
+        assert_eq!(stdout("claude-desktop", "PermissionRequest", Some("allow"), None), None);
     }
 
     #[test]
@@ -286,6 +433,30 @@ mod tests {
         assert_eq!(decision["updatedInput"]["answers"]["Which one?"], "B");
         // Only Claude Code asks questions: an answer for anyone else is nothing.
         assert!(stdout("codex", "PermissionRequest", Some(r#"{"answers":{"Which one?":"B"}}"#), Some(&question)).is_none());
+    }
+
+    #[test]
+    fn a_plan_goes_back_with_its_allow_and_only_on_a_click() {
+        let plan = json!({ "plan": "# Fix it\n1. Do it" });
+        let decision = |word: &str| -> Value {
+            serde_json::from_str::<Value>(&plan_json(word, &plan).unwrap()).unwrap()["hookSpecificOutput"]["decision"].clone()
+        };
+        for word in ["allow", "always", "plan_auto", "plan_manual"] {
+            assert_eq!(decision(word)["behavior"], "allow", "{word}");
+            assert_eq!(decision(word)["updatedInput"], plan, "{word}");
+        }
+        assert!(decision("allow").get("updatedPermissions").is_none());
+        assert_eq!(decision("plan_auto")["updatedPermissions"][0]["mode"], "auto");
+        assert_eq!(decision("plan_manual")["updatedPermissions"][0]["mode"], "default");
+        assert_eq!(decision("plan_change")["behavior"], "deny");
+        assert_eq!(decision("plan_change")["interrupt"], true);
+        assert_eq!(decision("deny")["behavior"], "deny");
+        for not_a_decision in ["", "ask", "maybe", r#"{"answers":{}}"#] {
+            assert!(plan_json(not_a_decision, &plan).is_none(), "{not_a_decision:?}");
+        }
+        // A plan word for any other request is nothing at all.
+        assert!(stdout("", "PermissionRequest", Some("plan_auto"), None).is_none());
+        assert_eq!(stdout("copilot", "PermissionRequest", Some("plan_auto"), None).unwrap(), r#"{"permissionDecision":"ask"}"#);
     }
 
     #[test]

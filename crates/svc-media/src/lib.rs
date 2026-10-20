@@ -70,7 +70,9 @@ pub enum Repeat {
 /// What the followed player plays.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Playback {
-    /// Who plays it: a packaged app's AUMID, a plain program's exe name.
+    /// Which session plays it: the app's id (a packaged app's AUMID, a plain
+    /// program's exe name), and for a second session of the same app (another
+    /// browser tab) that id with `#2`, `#3`… Stable while the session lives.
     pub source_aumid: String,
     pub source_name: String,
     /// Not the preferred player but the one that stands in while it is quiet (`set_fallback`).
@@ -126,8 +128,11 @@ impl Playback {
 /// A player the system knows about.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source {
+    /// The session's key (`Playback::source_aumid`).
     pub aumid: String,
     pub name: String,
+    /// What the session plays (a browser tab's page title); empty while unknown.
+    pub title: String,
     pub playing: bool,
 }
 
@@ -317,7 +322,10 @@ enum Cmd {
 /// A session with the registrations of its three events.
 struct Hooked {
     session: Session,
+    /// The app's id, and the session's own key (see `Playback::source_aumid`).
     aumid: String,
+    key: String,
+    title: String,
     tokens: [i64; 3],
 }
 
@@ -367,6 +375,12 @@ fn run(tx: &Sender<Msg>, rx: &Receiver<Msg>) -> WinResult<()> {
         if sessions_dirty {
             rehook(&manager, &mut hooked, tx);
         }
+        if props_dirty {
+            // Each session's own title: two tabs of one browser are told apart by it.
+            for h in hooked.iter_mut() {
+                h.title = h.session.TryGetMediaPropertiesAsync().and_then(|p| p.get()).and_then(|p| p.Title()).map(|t| t.to_string()).unwrap_or_default();
+            }
+        }
         let was_followed = followed.clone();
         let (reading, sources) =
             read(&manager, &hooked, &mut names, &mut followed, &mut clocks, &mut art, props_dirty);
@@ -409,7 +423,7 @@ fn run(tx: &Sender<Msg>, rx: &Receiver<Msg>) -> WinResult<()> {
         while let Some(m) = msg.take() {
             match m {
                 Msg::Quit => break 'life,
-                Msg::Sessions => sessions_dirty = true,
+                Msg::Sessions => (sessions_dirty, props_dirty) = (true, true),
                 Msg::Props => props_dirty = true,
                 Msg::Changed => {}
                 Msg::Cmd(cmd) => command(&hooked, cmd),
@@ -432,12 +446,21 @@ fn run(tx: &Sender<Msg>, rx: &Receiver<Msg>) -> WinResult<()> {
     Ok(())
 }
 
+/// Sessions that are still there keep their key and registrations; the others are
+/// hooked or let go. Windows hands out one session per browser tab, so the key is
+/// the app's id for the first and `id#2`, `id#3`… for the next.
 fn rehook(manager: &Manager, hooked: &mut Vec<Hooked>, tx: &Sender<Msg>) {
-    unhook(hooked);
     let Ok(list) = manager.GetSessions() else { return };
+    let mut old = std::mem::take(hooked);
     for i in 0..list.Size().unwrap_or(0) {
         let Ok(session) = list.GetAt(i) else { continue };
+        if let Some(at) = old.iter().position(|h| h.session == session) {
+            hooked.push(old.remove(at));
+            continue;
+        }
         let aumid = session.SourceAppUserModelId().map(|s| s.to_string()).unwrap_or_default();
+        let taken = |key: &str| hooked.iter().chain(&old).any(|h| h.key == key);
+        let key = (1..).map(|n| if n == 1 { aumid.clone() } else { format!("{aumid}#{n}") }).find(|k| !taken(k)).unwrap_or_default();
         let tokens = [
             session
                 .MediaPropertiesChanged(&wake::<Session, MediaPropertiesChangedEventArgs>(tx, || Msg::Props))
@@ -449,8 +472,9 @@ fn rehook(manager: &Manager, hooked: &mut Vec<Hooked>, tx: &Sender<Msg>) {
                 .TimelinePropertiesChanged(&wake::<Session, TimelinePropertiesChangedEventArgs>(tx, || Msg::Changed))
                 .unwrap_or(0),
         ];
-        hooked.push(Hooked { session, aumid, tokens });
+        hooked.push(Hooked { session, aumid, key, title: String::new(), tokens });
     }
+    unhook(&mut old);
 }
 
 fn unhook(hooked: &mut Vec<Hooked>) {
@@ -531,8 +555,8 @@ fn read(
         .map(|h| {
             let info = h.session.GetPlaybackInfo().ok();
             let playing = info.as_ref().and_then(|i| i.PlaybackStatus().ok()).is_some_and(plays);
-            if let Some(now) = info.as_ref().and_then(|i| clock(&h.session, i, playing, clocks.get(&h.aumid)).ok()) {
-                clocks.insert(h.aumid.clone(), now);
+            if let Some(now) = info.as_ref().and_then(|i| clock(&h.session, i, playing, clocks.get(&h.key)).ok()) {
+                clocks.insert(h.key.clone(), now);
             }
             let kind = info.and_then(|i| i.PlaybackType().ok()).and_then(|k| k.Value().ok());
             (playing, kind == Some(MediaPlaybackType::Music) || music_app(&h.aumid))
@@ -542,8 +566,9 @@ fn read(
         .iter()
         .zip(&flags)
         .map(|(h, (playing, _))| Source {
-            aumid: h.aumid.clone(),
+            aumid: h.key.clone(),
             name: names.entry(h.aumid.clone()).or_insert_with(|| display_name(&h.aumid)).clone(),
+            title: h.title.clone(),
             playing: *playing,
         })
         .collect();
@@ -555,13 +580,14 @@ fn read(
         let s = shared();
         (s.picked.clone(), s.fallback)
     };
-    let at = |aumid: &str| hooked.iter().position(|h| h.aumid == aumid);
+    let at = |aumid: &str| hooked.iter().position(|h| h.key == aumid);
+    let at_session = |current: Session| hooked.iter().position(|h| h.session == current);
     let playing = || {
         flags.iter().position(|(playing, music)| *playing && *music).or_else(|| flags.iter().position(|(playing, _)| *playing))
     };
     let resting = || {
         at(followed.as_str())
-            .or_else(|| at(&manager.GetCurrentSession().ok()?.SourceAppUserModelId().ok()?.to_string()))
+            .or_else(|| at_session(manager.GetCurrentSession().ok()?))
             .or(if hooked.is_empty() { None } else { Some(0) })
     };
     let chosen = match picked.as_deref() {
@@ -576,13 +602,13 @@ fn read(
     };
     let Some(i) = chosen else { return (None, sources) };
     let h = &hooked[i];
-    *followed = h.aumid.clone();
+    *followed = h.key.clone();
 
     // No clock: the player's timeline could not be read, and so nothing of it is told.
-    let playback = clocks.get(&h.aumid).and_then(|clock| snapshot(&h.session, art, fresh_art, clock).ok()).map(|mut p| {
-        p.source_aumid = h.aumid.clone();
+    let playback = clocks.get(&h.key).and_then(|clock| snapshot(&h.session, art, fresh_art, clock).ok()).map(|mut p| {
+        p.source_aumid = h.key.clone();
         p.source_name = sources[i].name.clone();
-        p.fallback = picked.as_deref().is_some_and(|preferred| preferred != h.aumid);
+        p.fallback = picked.as_deref().is_some_and(|preferred| preferred != h.key);
         p
     });
     (playback, sources)
@@ -752,7 +778,7 @@ fn target(hooked: &[Hooked]) -> Option<&Session> {
     if !s.fallback && s.picked.as_deref().is_some_and(|preferred| preferred != shown) {
         return None;
     }
-    hooked.iter().find(|h| h.aumid == shown).map(|h| &h.session)
+    hooked.iter().find(|h| h.key == shown).map(|h| &h.session)
 }
 
 /// Where a seek to `seconds` lands, in the player's ticks: inside the track,

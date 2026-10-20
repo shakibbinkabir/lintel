@@ -11,7 +11,7 @@ import { ICONS } from "../ui/icons";
 import { Bridge } from "../core/bridge";
 import {
   CI_COLORS, GH_STRINGS, GRID_WEEKS, activityHeader, actionsUrl, ciWord, contributionColor,
-  formatCount, lastDays, lastWeeks, mainCISummary, myPRsValue, profileUrl, safeGitHubUrl,
+  currentGitPush, formatCount, gitPushWord, lastDays, lastWeeks, mainCISummary, myPRsValue, profileUrl, safeGitHubUrl,
   sectionTitle, shortRepo, weekColumn, worstCI,
   type ContributionDay, type GitHubActivity, type GitHubPR, type GitHubPulse, type GitHubRepoCI,
   type GitHubSection, type GitHubStats,
@@ -74,10 +74,14 @@ export function githubPulseCard(
   const reviews = pulse.toReview.length;
   const main = mainCISummary(pulse.mainCI);
 
+  const push = currentGitPush();
+  const pushColor = push?.state === "failed" ? CI_COLORS.failure : push?.state === "pushing" ? CI_COLORS.pending : CI_COLORS.success;
+
   return h(
     "div",
     { class: "int-card" },
     head,
+    push ? h("div", { class: "gh-word", style: `color:${pushColor}`, text: gitPushWord(push.state) }) : null,
     h(
       "div",
       { class: "int-stats gh-rows" },
@@ -164,7 +168,7 @@ export function openRow(el: HTMLElement | undefined) {
 function listDetail(section: Exclude<GitHubSection, "activity">, pulse: GitHubPulse, onBack: () => void): HTMLElement {
   const rows: HTMLElement[] =
     section === "mainCI"
-      ? pulse.mainCI.map(repoRow)
+      ? [...pulse.mainCI, ...(pulse.branchCI ?? [])].map(repoRow)
       : (section === "myPRs" ? pulse.myPRs : pulse.toReview).map((pr) => prRow(pr, section === "myPRs"));
   const body =
     rows.length === 0

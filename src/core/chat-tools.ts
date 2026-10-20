@@ -53,6 +53,21 @@ export const KNOWN_CLIS: readonly CliInfo[] = [
 export const installedClis = (): Promise<CliInfo[]> =>
   ask<CliInfo[]>("chat:clis").then((found) => found ?? [], () => []);
 
+/** An MCP server other apps set up (chat/mcp.rs); turned on in the chat's settings. */
+export interface McpServer {
+  id: string;
+  source: string;
+  command: string;
+}
+
+/** The servers found in other apps' config files (read only). */
+export const mcpServers = (): Promise<McpServer[]> =>
+  ask<McpServer[]>("chat:mcp-list").then((found) => found ?? [], () => []);
+
+/** The click on a tool call's card. */
+export const answerMcp = (id: number, allow: boolean): Promise<unknown> =>
+  ask("chat:mcp-answer", `${id}:${allow ? 1 : 0}`).catch(() => null);
+
 /** Stop: ends the CLI that is writing an answer. */
 export const stopAnswer = (): Promise<unknown> => ask("chat:stop").catch(() => null);
 
@@ -98,6 +113,14 @@ export interface ChatPrefs {
   cliOrder: string[];
   /** Folders a task ran in, the latest first. */
   taskFolders: string[];
+  /** An Anthropic-compatible gateway for Claude (https or this computer); empty: Anthropic. */
+  gatewayUrl: string;
+  /** Today's calendar agenda goes to the chat provider. Off until the user turns it on. */
+  calendarAgenda: boolean;
+  /** What to do when a model refuses a picture: "" asks every time. */
+  imageRefusal: "" | "drop" | "switch";
+  /** MCP servers (by name) the chat may use, one click per call. Off until chosen. */
+  mcpServers: string[];
 }
 
 const strings = (value: unknown): string[] =>
@@ -109,6 +132,10 @@ export async function chatPrefs(): Promise<ChatPrefs> {
     openrouterFree: stored.openrouterFree === true,
     cliOrder: strings(stored.cliOrder),
     taskFolders: strings(stored.taskFolders),
+    gatewayUrl: typeof stored.gatewayUrl === "string" ? stored.gatewayUrl : "",
+    calendarAgenda: stored.calendarAgenda === true,
+    mcpServers: strings(stored.mcpServers),
+    imageRefusal: stored.imageRefusal === "drop" || stored.imageRefusal === "switch" ? stored.imageRefusal : "",
   };
 }
 

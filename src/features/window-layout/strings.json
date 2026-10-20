@@ -839,6 +839,81 @@
       "pt-BR": "Metade inferior",
       "ru": "Нижняя половина",
       "id": "Setengah bawah"
+    },
+    "Keep on top": {
+      "en": "Keep on top"
+    },
+    "Kept above the other windows": {
+      "en": "Kept above the other windows"
+    },
+    "Let go": {
+      "en": "Let go"
+    },
+    "Shows the virtual desktops of Windows by name, to switch between them.": {
+      "en": "Shows the virtual desktops of Windows by name, to switch between them."
+    },
+    "Turn on": {
+      "en": "Turn on"
+    },
+    "Desktop {n}": {
+      "en": "Desktop {n}"
+    },
+    "Same as the screen gap": {
+      "en": "Same as the screen gap"
+    },
+    "Left edge gap": {
+      "en": "Left edge gap"
+    },
+    "Top edge gap": {
+      "en": "Top edge gap"
+    },
+    "Right edge gap": {
+      "en": "Right edge gap"
+    },
+    "Bottom edge gap": {
+      "en": "Bottom edge gap"
+    },
+    "Dragging": {
+      "en": "Dragging"
+    },
+    "Snap a window dragged by its title bar": {
+      "en": "Snap a window dragged by its title bar"
+    },
+    "Let go at a screen edge for a half, at a corner for a quarter, at the top for the whole screen. A window Lintel placed gets its old size back when you drag it away.": {
+      "en": "Let go at a screen edge for a half, at a corner for a quarter, at the top for the whole screen. A window Lintel placed gets its old size back when you drag it away."
+    },
+    "Move a window by dragging it from anywhere": {
+      "en": "Move a window by dragging it from anywhere"
+    },
+    "Off": {
+      "en": "Off"
+    },
+    "Hold these keys and drag. It snaps like the title bar does. The click is not passed on to the app.": {
+      "en": "Hold these keys and drag. It snaps like the title bar does. The click is not passed on to the app."
+    },
+    "Hold for columns while dragging": {
+      "en": "Hold for columns while dragging"
+    },
+    "The display is split in two columns, three on an ultrawide, and letting go places the window in the column under the pointer.": {
+      "en": "The display is split in two columns, three on an ultrawide, and letting go places the window in the column under the pointer."
+    },
+    "Virtual desktops": {
+      "en": "Virtual desktops"
+    },
+    "Show the desktops in the island": {
+      "en": "Show the desktops in the island"
+    },
+    "A section that lists the virtual desktops by the names given in Windows. It reads them only when it is shown.": {
+      "en": "A section that lists the virtual desktops by the names given in Windows. It reads them only when it is shown."
+    },
+    "Desktops": {
+      "en": "Desktops"
+    },
+    "Keep the window above the others (again: let it go)": {
+      "en": "Keep the window above the others (again: let it go)"
+    },
+    "Let every pinned window go": {
+      "en": "Let every pinned window go"
     }
   }
 }

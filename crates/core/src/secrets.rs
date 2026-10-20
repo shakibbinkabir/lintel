@@ -10,6 +10,7 @@ const SERVICE: &str = notch_brand::SLUG;
 /// Every key Lintel may store. Anything outside this list is refused.
 pub const KNOWN_KEYS: &[&str] = &[
     "anthropic-api-key",
+    "anthropic-gateway-token",
     "openai-api-key",
     "google-api-key",
     "openrouter-api-key",
@@ -22,6 +23,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "resend-api-key",
     "notion-api-key",
     "calcom-api-key",
+    "linear-api-key",
 ];
 
 /// The ids of the registered features: each may store keys named `<id>/<name>`.
