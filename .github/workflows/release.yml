@@ -7,7 +7,9 @@ name: Release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    # A beta's tag has a hyphen (v2.0.1-beta.1): it is never released here, so no
+    # site, updater, winget or Store ever sees it; a beta is a hand-made pre-release.
+    tags: ["v*.*.*", "!v*-*"]
 
 permissions:
   contents: write
@@ -18,6 +20,7 @@ concurrency:
 
 jobs:
   release:
+    if: ${{ !contains(github.ref_name, '-') }}
     name: Build and publish
     runs-on: windows-latest
     timeout-minutes: 120
